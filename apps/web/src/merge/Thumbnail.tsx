@@ -7,9 +7,7 @@ const docCache = new Map<string, Promise<PdfDoc>>();
 export function getPdfDoc(file: SourceFile): Promise<PdfDoc> {
   let p = docCache.get(file.id);
   if (!p) {
-    p = file.password
-      ? import('pdfjs-dist').then((pdfjs) => pdfjs.getDocument({ data: file.bytes.slice(), password: file.password, isEvalSupported: false }).promise)
-      : openPdf(file.bytes);
+    p = openPdf(file.bytes, file.password);
     docCache.set(file.id, p);
   }
   return p;

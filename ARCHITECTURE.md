@@ -142,8 +142,8 @@ tables right below a table whose bottom edge changed; paths and images there get
   and their pieces are stored as Flate. On a JPEG page scan this renders a flowed page in ~0.5 s instead
   of ~8 s, costs ~0.2 s per edit and ~40 KB. Rotated scans are still drawn whole under the clip. A cell set with `setCellText` (even to empty) is painted with
   its background colour and gets new text (vector: a page font if it has the glyphs, else a substitute)
-  in the ink colour, at the largest `inkFontSize` of the column (shared/tableMesh.ts: max of ascent ÷ 0.75
-  and line ÷ 0.95, measured on real glyphs). At Confirm the editor also measures each cell's ink box inside
+  in the ink colour, at the largest `inkFontSize` of the column (shared/tableMesh.ts: max of ascent ÷ 0.705
+  and line ÷ 0.93, measured on Helvetica-like glyphs; the web pdf.js renders standard-14 fonts from its bundled Liberation/Foxit files, never system fonts). At Confirm the editor also measures each cell's ink box inside
   the crop band (`raster.inkBoxes`: the tallest inked pixel-row run as `line`, its top to its baseline, the
   last row with ≥ 40 % of the busiest row's ink, as `ascent`); it becomes the cell `minSize` measured from
   the top-left corner (crops are anchored there), enforced like image cells until the cell is rewritten.

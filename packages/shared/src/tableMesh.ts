@@ -3,10 +3,11 @@ import { ColorSchema, RectSchema, type Rect } from './geometry.ts';
 
 /**
  * Shares of the font size that a scanned line of text covers, measured on a 4 px/pt render (antialiasing included):
- * from the top of its ink to the bottom of its descenders, and from the top to its baseline.
+ * from the top of its ink to the bottom of its descenders, and from the top to its baseline. Set for Helvetica-like
+ * sans: Liberation Sans reads 0.68 (caps) to 0.73 (ascenders) and ≈0.93 for a full line, Helvetica ≈0.72 and 0.925.
  */
-export const INK_LINE_EM = 0.95;
-export const INK_ASCENT_EM = 0.75;
+export const INK_LINE_EM = 0.93;
+export const INK_ASCENT_EM = 0.705;
 
 /**
  * Font size of a scanned text line. The ascent alone is right with or without descenders, but a sparse baseline
