@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { createApp } from '../src/app.ts';
 import { sanitizeFileName } from '../src/http.ts';
 import { splitFileArg } from '../src/cli.ts';
@@ -26,6 +26,18 @@ describe('POST /api/merge', () => {
     const res = await createApp().app.request('/api/merge', { method: 'POST', body: form });
     expect(res.status).toBe(200);
     expect((await PDFDocument.load(new Uint8Array(await res.arrayBuffer()))).getPageCount()).toBe(5);
+  });
+
+  it('copies an earlier output page from {copy} segments, sharing its content', async () => {
+    const form = new FormData();
+    form.append('files', new File([await (await makePdf(2, 'A')).save()], 'a.pdf'));
+    form.append('segments', JSON.stringify([{ file: 0, pages: '1-2' }, { copy: 0 }, { copy: -1 }]));
+    const res = await createApp().app.request('/api/merge', { method: 'POST', body: form });
+    expect(res.status).toBe(200);
+    const pages = (await PDFDocument.load(new Uint8Array(await res.arrayBuffer()))).getPages();
+    const contents = pages.map((p) => p.node.get(PDFName.of('Contents'))?.toString());
+    expect(contents).toEqual([contents[0], contents[1], contents[0], contents[0]]);
+    expect(contents[0]).not.toBe(contents[1]);
   });
 
   it('rejects non-PDF uploads and bad ranges with JSON errors', async () => {
