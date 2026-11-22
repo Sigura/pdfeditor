@@ -31,10 +31,12 @@ export function App() {
     <div className="flex h-screen flex-col">
       <header className="flex items-center gap-6 border-b border-slate-200 bg-white px-4 py-2">
         <h1 className="text-lg font-semibold">PDF Toolkit</h1>
-        <nav className="flex gap-1">
+        <nav className="flex gap-1" role="tablist" aria-label="Tools">
           {(['merge', 'edit'] as const).map((t) => (
             <button
               key={t}
+              role="tab"
+              aria-selected={tab === t}
               onClick={() => setTab(t)}
               className={`rounded px-3 py-1 text-sm ${tab === t ? 'bg-slate-900 text-white' : 'hover:bg-slate-100'}`}
             >

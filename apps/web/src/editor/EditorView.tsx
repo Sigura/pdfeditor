@@ -574,9 +574,9 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
             <span className="max-w-xs truncate font-medium">{st.fileName}</span>
             {hasUnsaved(st) && <span data-testid="unsaved" title="Changes not downloaded yet" aria-label="Changes not downloaded yet" className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />}
             <div className="ml-4 flex items-center gap-1">
-              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / ZOOM_STEP)} title="Zoom out (Ctrl + −)">−</button>
-              <span className="w-12 text-center tabular-nums">{Math.round(st.zoom * 100)}%</span>
-              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * ZOOM_STEP)} title="Zoom in (Ctrl + =)">+</button>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / ZOOM_STEP)} title="Zoom out (Ctrl + −)" aria-label="Zoom out">−</button>
+              <span className="w-12 text-center tabular-nums" aria-label={`Zoom ${Math.round(st.zoom * 100)}%`}>{Math.round(st.zoom * 100)}%</span>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * ZOOM_STEP)} title="Zoom in (Ctrl + =)" aria-label="Zoom in">+</button>
               <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={fitWidth} title="Fit page width (Ctrl + 0)" data-testid="fit-width">
                 Fit
               </button>
@@ -594,6 +594,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
                   key={t}
                   title={t === 'table' && gridLocked ? 'Tables are set up on the original layout: undo moves and row/column changes first' : title}
                   disabled={t === 'table' && gridLocked}
+                  aria-pressed={st.tool === t}
                   className={`rounded px-2 py-1 disabled:opacity-40 ${st.tool === t ? 'bg-sky-600 text-white' : 'hover:bg-slate-100'}`}
                   onClick={() => st.setTool(t)}
                 >
@@ -603,10 +604,10 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
               {st.tool === 'addText' && pdf && <FontPicker pdf={pdf} pages={st.pages} revision={st.revision} />}
             </div>
             <div className="ml-2 flex items-center gap-1">
-              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl + Z)">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl + Z)" aria-label="Undo">
                 ↶
               </button>
-              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl + Shift + Z)">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl + Shift + Z)" aria-label="Redo">
                 ↷
               </button>
             </div>

@@ -19,7 +19,7 @@ async function textItems(bytes: Uint8Array) {
 
 async function open(page: Page, name: string) {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('tab', { name: 'Edit', exact: true }).click();
   await page.getByTestId('editor-input').setInputFiles(fixture(name));
   await expect(page.getByTestId('overlay')).toBeVisible();
 }
@@ -170,7 +170,7 @@ test('duplicate page: the copy is edited on its own in the editor; Merge repeats
   await expect.poll(order).toEqual([0, 1]);
   await expect(page.getByTestId('editor-error')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Merge & Pages', exact: true }).click();
+  await page.getByRole('tab', { name: 'Merge & Pages', exact: true }).click();
   await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
   const items = page.getByTestId('merge-page');
   await expect(items).toHaveCount(2);
@@ -899,4 +899,20 @@ test('dialogs keep Tab inside, give the focus back on close and cancel on a back
   await page.mouse.click(5, 5);
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId('merge-page')).toHaveCount(2);
+});
+
+test('glyph buttons have names; tools, align and tabs expose their state', async ({ page }) => {
+  await open(page, 'table.pdf');
+  await expect(page.getByRole('tab', { name: 'Edit', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'false');
+  for (const name of ['Zoom in', 'Zoom out', 'Undo', 'Redo']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  const tools = page.getByTestId('tools');
+  await expect(tools.getByRole('button', { name: 'Select', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await tools.getByRole('button', { name: 'Add text', exact: true }).click();
+  await expect(tools.getByRole('button', { name: 'Add text', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('text-box').first().click();
+  await expect(page.getByRole('button', { name: 'Align left' })).toHaveAttribute('aria-pressed', /true|false/);
+  await expect(page.getByRole('spinbutton', { name: 'Line spacing' })).toHaveCount(1);
+  await expect(page.getByLabel('Text colour')).toHaveCount(1);
 });
