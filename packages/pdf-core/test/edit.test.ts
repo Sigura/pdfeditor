@@ -914,6 +914,31 @@ describe('table paging (paged-table.pdf)', () => {
     expect(texts[1]!.filter((x) => x.str === 'Page 2')).toHaveLength(1);
   });
 
+  it('a JPEG scan is cut into pieces decoded by pdf.js, which render exactly like the scan', async () => {
+    const original = fixture('paged-scan-jpeg.pdf');
+    const xs = [60, 220, 340, 460, 535];
+    const ys = [230, 206, 182, 158, 134];
+    const grey = (v: number) => ({ space: 'gray' as const, values: [v / 255] });
+    const define = { type: 'defineTable' as const, tableId: 't-scan', pageIndex: 0, spans: [], vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), borderWidth: 1.5, headerRows: 1, origin: 'raster' as const, raster: { paper: grey(246), ink: grey(50) } };
+    const res = await applyEdits(original, [define, { type: 'tableInsertRow', tableId: 't-scan', index: 1, position: 'above' }]);
+    const { doc } = await loadPdf(res.bytes);
+    const xobjects = doc.getPage(0).node.Resources()!.lookup(PDFName.of('XObject'), PDFDict);
+    const dicts = [...new TextDecoder().decode(pageContentBytes(doc.getPage(0))).matchAll(/\/(\w+) Do/g)].map((m) => xobjects.lookup(PDFName.of(m[1]!), PDFStream).dict);
+    const pieces = dicts.filter((d) => d.lookup(PDFName.of('Filter'))?.toString() === '/FlateDecode');
+    expect(dicts.filter((d) => d.lookup(PDFName.of('Filter'))?.toString() === '/DCTDecode')).toHaveLength(1);
+    expect(pieces.length).toBeGreaterThan(20);
+    for (const d of pieces) expect(d.lookup(PDFName.of('ColorSpace'))?.toString()).toBe('/DeviceRGB');
+    // Native resolution (2 px/pt): the header row stays and the body cells move down by one row (24 pt), pixel
+    // for pixel (borders are tiles cut from one piece of an edge, so their JPEG noise and ringing, up to
+    // 4 pt off the line, differ).
+    const S = 2;
+    const [a, b] = await Promise.all([renderGray(original, S), renderGray(res.bytes, S)]);
+    let diff = 0;
+    const clear = (x: number, y: number) => !xs.some((v) => Math.abs(x - v) < 4) && !ys.some((v) => Math.abs(y - v) < 4);
+    for (let y = ys[4]!; y < ys[0]!; y += 1 / S) for (let x = xs[0]!; x < xs[4]!; x += 1 / S) if (clear(x, y)) diff = Math.max(diff, Math.abs(a.at(x, y) - b.at(x, y > ys[1]! ? y : y - 24)));
+    expect(diff).toBeLessThanOrEqual(2);
+  });
+
   it('scanned page: asks for a measured layout, then copies the scan bands as crops onto paper', async () => {
     const original = fixture('paged-scan.pdf');
     const xs = [60, 220, 340, 460, 535];

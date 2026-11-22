@@ -134,7 +134,10 @@ tables right below a table whose bottom edge changed; paths and images there get
   scan's samples (`edit/imageCrop.ts`: pixel-aligned, 8-px-aligned with a 4 px margin, same colour space,
   decode and mask, cached per source area), placed on the scan's own pixel grid; drawing the whole scan
   under each clip made pdf.js paint it ~140 times per page (seconds). Scans whose filter pdf-lib can't
-  decode (DCT, JPX, CCITT, JBIG2) or that are rotated are still drawn whole under the clip. A cell set with `setCellText` (even to empty) is painted with
+  decode (DCT, JPX, CCITT, JBIG2) are decoded by pdf.js (the image alone in a one-page document, its
+  operator list's image data: RGB or 1-bit grey after pdf.js's colour conversion, alpha as a soft mask),
+  and their pieces are stored as Flate. On a JPEG page scan this renders a flowed page in ~0.5 s instead
+  of ~8 s, costs ~0.2 s per edit and ~40 KB. Rotated scans are still drawn whole under the clip. A cell set with `setCellText` (even to empty) is painted with
   its background colour and gets new text (vector: a page font if it has the glyphs, else a substitute)
   in the ink colour, at the largest `inkFontSize` of the column (shared/tableMesh.ts: max of ascent ÷ 0.75
   and line ÷ 0.95, measured on real glyphs). At Confirm the editor also measures each cell's ink box inside

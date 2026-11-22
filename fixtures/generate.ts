@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fontkit from '@pdf-lib/fontkit';
-import { PDFDocument, PDFName, StandardFonts, concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRawStream, StandardFonts, concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 
 const require = createRequire(import.meta.url);
 const pdfjsDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
@@ -419,8 +419,8 @@ async function pagedTable() {
 }
 
 /** One scanned page (2 px/pt): header and footer bars, text bars, and a bordered 4 × 4 table near the bottom. No text layer. */
-async function pagedScan() {
-  const doc = await PDFDocument.create();
+/** Page scan at 2 px/pt: header line, body bars, a bordered 4 × 4 table, a bar below it, a footer bar. */
+function pagedScanPixels() {
   const s = 2;
   const [pw, ph] = [595, 842];
   const w = pw * s;
@@ -438,12 +438,37 @@ async function pagedScan() {
   for (const y of ys) rect(xs[0]! - 0.75, y - 0.75, xs[4]! + 0.75, y + 0.75, 45);
   for (const x of xs) rect(x - 0.75, ys[4]! - 0.75, x + 0.75, ys[0]! + 0.75, 45);
   rect(60, 100, 300, 108, 60);
+  return { px, w, h, pw, ph };
+}
+
+async function scanPage(name: string, image: (doc: PDFDocument, px: Uint8Array, w: number, h: number) => ReturnType<PDFDocument['context']['register']>) {
+  const doc = await PDFDocument.create();
+  const { px, w, h, pw, ph } = pagedScanPixels();
   const ctx = doc.context;
-  const img = ctx.register(ctx.flateStream(px, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+  const img = image(doc, px, w, h);
   const page = doc.addPage([pw, ph]);
   page.node.setXObject(PDFName.of('Im1'), img);
   page.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream(`q ${pw} 0 0 ${ph} 0 0 cm /Im1 Do Q`)));
-  await save('paged-scan.pdf', doc);
+  await save(name, doc);
+}
+
+async function pagedScan() {
+  await scanPage('paged-scan.pdf', (doc, px, w, h) => doc.context.register(doc.context.flateStream(px, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceGray', BitsPerComponent: 8 })));
+}
+
+/** paged-scan.pdf stored as a JPEG (DCTDecode, RGB, quality 90), like most scanner output; encoded with pdf.js's canvas package. */
+async function pagedScanJpeg() {
+  const { createCanvas } = createRequire(require.resolve('pdfjs-dist/package.json'))('@napi-rs/canvas') as typeof import('@napi-rs/canvas');
+  await scanPage('paged-scan-jpeg.pdf', (doc, px, w, h) => {
+    const canvas = createCanvas(w, h);
+    const g = canvas.getContext('2d');
+    const data = g.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) data.data.set([px[i]!, px[i]!, px[i]!, 255], i * 4);
+    g.putImageData(data, 0, 0);
+    const jpeg = canvas.toBuffer('image/jpeg', 90);
+    const dict = doc.context.obj({ Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceRGB', BitsPerComponent: 8, Filter: 'DCTDecode' });
+    return doc.context.register(PDFRawStream.of(dict, new Uint8Array(jpeg)));
+  });
 }
 
 await mkdir(outDir, { recursive: true });
@@ -459,3 +484,4 @@ await imageTable();
 await embeddedType1AndCff();
 await pagedTable();
 await pagedScan();
+await pagedScanJpeg();

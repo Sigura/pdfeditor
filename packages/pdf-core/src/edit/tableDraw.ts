@@ -352,7 +352,7 @@ export function tableDrawer(ctx: TableDrawContext) {
     return `TKIm${n}`;
   };
   /** The scan under a raster table (the topmost image covering it) and its grid, or null with a warning. */
-  const rasterOf = (a: PageAnalysis, orig: Table): Pick<RasterInput, 'image' | 'orig' | 'look' | 'borderWidth'> | null => {
+  const rasterOf = async (a: PageAnalysis, orig: Table): Promise<Pick<RasterInput, 'image' | 'orig' | 'look' | 'borderWidth'> | null> => {
     const setup = orig.setup;
     if (setup?.origin !== 'raster') return null;
     const b = orig.bbox;
@@ -369,7 +369,7 @@ export function tableDrawer(ctx: TableDrawContext) {
       headerRows: setup.headerRows,
       snapped: setup.vertices.map((row) => row.map((v) => v.snapped)),
     };
-    const cropper = im.ref && imageCropper(doc.context, im.ref, im.ctm);
+    const cropper = im.ref && (await imageCropper(doc.context, im.ref, im.ctm));
     const crop = cropper
       ? (src: Rect) => {
           const piece = cropper(src);
@@ -386,7 +386,7 @@ export function tableDrawer(ctx: TableDrawContext) {
       const orig = ti.table;
       const page = pages[te.pageIndex]!;
       const tIdx = page.tables.findIndex((t) => t.id === te.tableId);
-      const raster = rasterOf(a, orig);
+      const raster = await rasterOf(a, orig);
       // Painting operators become `n`, so the ruling lines and fills disappear but the graphics state stays as it was.
       for (const p of ti.paths) patchOf(a, p.streamId).replace.set(p.opEnd - 1, 'n');
       const dropImage = (im: ImageItem) => patchOf(a, im.streamId).replace.set(im.opIndex, '');
