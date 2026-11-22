@@ -161,6 +161,16 @@ async function scannedTable() {
   page.node.setXObject(PDFName.of('Im1'), img);
   page.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream(`q ${pw} 0 0 ${ph} 0 0 cm /Im1 Do Q`)));
   await save('scanned-table.pdf', doc);
+
+  // The same page with the scan stored a quarter turn round and placed rotated back (as some scanners do).
+  const rot = await PDFDocument.create();
+  const turned = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) turned[(w - 1 - x) * h + y] = px[y * w + x]!;
+  const rimg = rot.context.register(rot.context.flateStream(turned, { Type: 'XObject', Subtype: 'Image', Width: h, Height: w, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+  const rpage = rot.addPage([pw, ph]);
+  rpage.node.setXObject(PDFName.of('Im1'), rimg);
+  rpage.node.set(PDFName.of('Contents'), rot.context.register(rot.context.flateStream(`q 0 -${ph} ${pw} 0 0 ${ph} cm /Im1 Do Q`)));
+  await save('scanned-table-rotated.pdf', rot);
 }
 
 async function table() {

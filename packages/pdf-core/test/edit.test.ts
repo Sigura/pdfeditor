@@ -688,6 +688,21 @@ describe('scanned tables (scanned-table.pdf)', () => {
     expect(dark, 'right part of the edited cell is paper').toBeLessThan(10);
   });
 
+  it('a scan placed a quarter turn round is cut into rotated pieces and renders like the upright one', async () => {
+    const ops = [define, { type: 'tableInsertRow' as const, tableId: 't-scan', index: 1, position: 'above' as const }, { type: 'setCellText' as const, tableId: 't-scan', row: 3, col: 1, text: '' }];
+    const [up, turned] = await Promise.all([applyEdits(fixture('scanned-table.pdf'), ops), applyEdits(fixture('scanned-table-rotated.pdf'), ops)]);
+    const { doc } = await loadPdf(turned.bytes);
+    const names = [...new TextDecoder().decode(pageContentBytes(doc.getPage(0))).matchAll(/\/(\w+) Do/g)].map((m) => m[1]);
+    // The whole scan once (the page itself), every other draw a piece.
+    expect(names.filter((n) => n === 'Im1')).toHaveLength(1);
+    expect(names.length).toBeGreaterThan(20);
+    const S = 2;
+    const [a, b] = await Promise.all([renderGray(up.bytes, S), renderGray(turned.bytes, S)]);
+    let diff = 0;
+    for (let y = 300; y < 760; y += 1 / S) for (let x = 40; x < 560; x += 1 / S) diff = Math.max(diff, Math.abs(a.at(x, y) - b.at(x, y)));
+    expect(diff).toBeLessThanOrEqual(2);
+  });
+
   it('the model\'s scan fills follow their cells into the new grid (inserted rows as drawn, a set background included)', async () => {
     const fills = ys.slice(0, -1).map((_, r) => xs.slice(0, -1).map((_, c) => (r === 0 ? grey(212) : r === 2 && c === 1 ? grey(180) : null)));
     const res = await applyEdits(fixture('scanned-table.pdf'), [

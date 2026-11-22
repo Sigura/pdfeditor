@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFObjectCopier, PDFRawStream, PDFRef, type PDFContext, type PDFObject } from 'pdf-lib';
 import { getDocument, ImageKind, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { Matrix, Rect } from '@pdf-toolkit/shared';
+import { apply, invert, mul } from '../math.ts';
 
 type Samples = { data: Uint8Array; w: number; h: number; bpc: number; comps: number };
 
@@ -179,16 +180,17 @@ async function pdfjsSource(ctx: PDFContext, ref: PDFRef): Promise<Source | null>
 }
 
 /**
- * Cuts pieces out of an axis-aligned image painted with `ctm`: each piece is a new image XObject
- * holding the source samples whole (cut at pixel boundaries, with a margin), placed so its pixels land
- * exactly on the original ones. A viewer then paints only the piece instead of the whole image under a
+ * Cuts pieces out of an image painted with `ctm`: each piece is a new image XObject holding the source
+ * samples whole (cut at pixel boundaries, with a margin), placed so its pixels land exactly on the
+ * original ones. A rotated or skewed placement is cut in the image's own pixel grid (the bounding box of
+ * the area there), so no pixel is resampled; the caller's clip trims the piece. A viewer then paints only the piece instead of the whole image under a
  * clip. Images pdf-lib can decode keep their colour space, decode array and masks; the others are
- * decoded by pdf.js. Returns null when the image can't be cut (a rotated placement, an image mask or
+ * decoded by pdf.js. Returns null when the image can't be cut (a degenerate placement, an image mask or
  * a filter neither can decode, a mask of another size).
  */
 export async function imageCropper(ctx: PDFContext, ref: PDFRef, ctm: Matrix): Promise<((user: Rect) => ImageCrop | null) | null> {
-  const [a, b, c, d, e, f] = ctm;
-  if (Math.abs(b) > 1e-9 || Math.abs(c) > 1e-9 || !a || !d) return null;
+  const inv = invert(ctm);
+  if (!inv) return null;
   const stream = ctx.lookup(ref);
   if (!(stream instanceof PDFRawStream)) return null;
   const mask = stream.dict.lookup(PDFName.of('ImageMask'))?.toString() === 'true';
@@ -202,8 +204,9 @@ export async function imageCropper(ctx: PDFContext, ref: PDFRef, ctm: Matrix): P
 
   return (user: Rect) => {
     // Image space: u right, v up over the unit square; pixel row 0 is the top (v = 1).
-    const us = [(user.x0 - e) / a, (user.x1 - e) / a];
-    const vs = [(user.y0 - f) / d, (user.y1 - f) / d];
+    const corners = [apply(inv, user.x0, user.y0), apply(inv, user.x1, user.y0), apply(inv, user.x0, user.y1), apply(inv, user.x1, user.y1)];
+    const us = corners.map((p) => p[0]);
+    const vs = corners.map((p) => p[1]);
     const x0 = Math.max(0, alignDown(Math.floor(Math.min(...us) * W) - MARGIN));
     const x1 = Math.min(W, alignUp(Math.ceil(Math.max(...us) * W) + MARGIN));
     const y0 = Math.max(0, alignDown(Math.floor((1 - Math.max(...vs)) * H) - MARGIN));
@@ -214,7 +217,7 @@ export async function imageCropper(ctx: PDFContext, ref: PDFRef, ctm: Matrix): P
     if (hit) return hit;
     const [w, h] = [x1 - x0, y1 - y0];
     const maskRef = source.mask && make(source.mask, x0, y0, w, h);
-    const crop: ImageCrop = { ref: make(source, x0, y0, w, h, maskRef && [source.mask!.key, maskRef]), ctm: [(a * w) / W, 0, 0, (d * h) / H, e + (a * x0) / W, f + d * (1 - y1 / H)] };
+    const crop: ImageCrop = { ref: make(source, x0, y0, w, h, maskRef && [source.mask!.key, maskRef]), ctm: mul([w / W, 0, 0, h / H, x0 / W, 1 - y1 / H], ctm) };
     cache.set(key, crop);
     return crop;
   };
