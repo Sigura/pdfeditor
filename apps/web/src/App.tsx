@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { MergeView } from './merge/MergeView.tsx';
 import { EditorView } from './editor/EditorView.tsx';
+import { Dialogs } from './lib/Dialogs.tsx';
 
 type Tab = 'merge' | 'edit';
 
@@ -25,6 +26,7 @@ export function App() {
       <main className="min-h-0 flex-1">
         {tab === 'merge' ? <MergeView /> : <EditorView />}
       </main>
+      <Dialogs />
     </div>
   );
 }

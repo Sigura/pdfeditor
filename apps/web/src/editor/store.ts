@@ -56,6 +56,8 @@ export type EditorState = {
   /** Page models of the unedited document, to locate deleted elements. */
   origPages: PageModel[];
   revision: number;
+  /** Revision last downloaded; leaving the page asks first when edits are newer. */
+  downloadedRevision: number;
   pageIndex: number;
   zoom: number;
   hoveredId: string | null;
@@ -113,6 +115,9 @@ export type EditorState = {
   setPrompt: (p: Prompt | null) => void;
   /** Takes back the last `count` ops (not redoable). */
   revert: (count: number) => Promise<void>;
+  /** Sends a pending nudge now and resolves once every queued or running change has been applied. */
+  settle: () => Promise<void>;
+  setDownloaded: (revision: number) => void;
 };
 
 const initial = {
@@ -121,6 +126,7 @@ const initial = {
   pages: [],
   origPages: [],
   revision: 0,
+  downloadedRevision: 0,
   pageIndex: 0,
   zoom: 1.25,
   hoveredId: null,
@@ -173,6 +179,8 @@ async function sendNudge(get: () => EditorState, set: (p: Partial<EditorState>) 
 }
 
 let queue: Promise<boolean> = Promise.resolve(true);
+/** edit() calls still running: after their first request they may measure scans and send more. */
+const running = new Set<Promise<void>>();
 
 /**
  * Requests run one at a time, in call order, so appends never overlap. `ops` as a function is
@@ -217,36 +225,55 @@ export const useEditor = create<EditorState>((set, get) => ({
   editCell: (editingCell) => set({ editingCell, cell: editingCell ?? get().cell }),
   setNewText: (s) => set((st) => ({ newText: { ...st.newText, ...s } })),
   startSetup: (tableSetup) => set({ tableSetup }),
-  edit: async (ops, then) => {
-    const before = get().overflows;
-    if (await send(get, ops, 'append')) {
-      set({ redoStack: [] });
-      let count = ops.length;
-      // The flow reached scanned pages: measure their layout (on the original) and send it with this change.
-      for (let round = 0; round < 3; round++) {
-        const need = get().overflows.find((o) => o.needsLayout?.length)?.needsLayout;
-        const docId = get().docId;
-        if (!need || !docId) break;
-        const models = need.map((i) => get().origPages[i]!);
-        let layouts: EditOperation[];
-        try {
-          layouts = await track('Measuring scanned page layout…', (step) => measureScanLayouts(docId, models, (i, n) => step(`Measuring scanned page layout ${i}/${n}…`)));
-        } catch (e) {
-          set({ error: (e as Error).message });
-          break;
+  edit: (ops, then) => {
+    const p = (async () => {
+      const before = get().overflows;
+      if (await send(get, ops, 'append')) {
+        set({ redoStack: [] });
+        let count = ops.length;
+        // The flow reached scanned pages: measure their layout (on the original) and send it with this change.
+        for (let round = 0; round < 3; round++) {
+          const need = get().overflows.find((o) => o.needsLayout?.length)?.needsLayout;
+          const docId = get().docId;
+          if (!need || !docId) break;
+          const models = need.map((i) => get().origPages[i]!);
+          let layouts: EditOperation[];
+          try {
+            layouts = await track('Measuring scanned page layout…', (step) => measureScanLayouts(docId, models, (i, n) => step(`Measuring scanned page layout ${i}/${n}…`)));
+          } catch (e) {
+            set({ error: (e as Error).message });
+            break;
+          }
+          if (!layouts.length || !(await send(get, layouts, 'append'))) break;
+          count += layouts.length;
         }
-        if (!layouts.length || !(await send(get, layouts, 'append'))) break;
-        count += layouts.length;
+        // Content newly pushed past the last page: ask how to continue (new page copying the header/footer, empty, or cancel).
+        const worse = get().overflows.find((o) => o.needsPage && o.by > (before.find((b) => b.pageIndex === o.pageIndex)?.by ?? 0) + 0.05);
+        const tableIds = get().continuations.map((c) => c.tableId);
+        if (worse) set({ prompt: { kind: 'newPage', pageIndex: worse.pageIndex, by: worse.by, count, ...(worse.pageNumber && { pageNumber: worse.pageNumber }), tableIds } });
+        // A table cut onto an existing page: ask whether its header rows repeat there.
+        else if (tableIds.length) set({ prompt: { kind: 'continuation', pageIndex: get().continuations[0]!.pageIndex, tableIds } });
+        then?.();
       }
-      // Content newly pushed past the last page: ask how to continue (new page copying the header/footer, empty, or cancel).
-      const worse = get().overflows.find((o) => o.needsPage && o.by > (before.find((b) => b.pageIndex === o.pageIndex)?.by ?? 0) + 0.05);
-      const tableIds = get().continuations.map((c) => c.tableId);
-      if (worse) set({ prompt: { kind: 'newPage', pageIndex: worse.pageIndex, by: worse.by, count, ...(worse.pageNumber && { pageNumber: worse.pageNumber }), tableIds } });
-      // A table cut onto an existing page: ask whether its header rows repeat there.
-      else if (tableIds.length) set({ prompt: { kind: 'continuation', pageIndex: get().continuations[0]!.pageIndex, tableIds } });
-      then?.();
+    })().finally(() => running.delete(p));
+    running.add(p);
+    return p;
+  },
+  settle: async () => {
+    for (;;) {
+      const { nudge } = get();
+      if (nudge) {
+        clearTimeout(nudgeTimer);
+        const p = pendingNudges.get(nudge.id) ?? { dx: 0, dy: 0 };
+        const rest = { id: nudge.id, dx: nudge.dx - p.dx, dy: nudge.dy - p.dy };
+        if (Math.abs(rest.dx) > 1e-6 || Math.abs(rest.dy) > 1e-6) void sendNudge(get, set, rest);
+      }
+      const q = queue;
+      await Promise.all([q, ...running]);
+      if (q === queue && !running.size && !pendingNudges.size && !get().nudge) return;
     }
   },
+  setDownloaded: (downloadedRevision) => set({ downloadedRevision }),
   setPrompt: (prompt) => set({ prompt }),
   revert: async (count) => {
     set({ prompt: null });
@@ -316,3 +343,12 @@ export const useEditor = create<EditorState>((set, get) => ({
   progress: (id, label) => set((s) => ({ activities: s.activities.map((a) => (a.id === id ? { ...a, label } : a)) })),
   end: (id) => set((s) => ({ activities: s.activities.filter((a) => a.id !== id) })),
 }));
+
+// The document lives on the server only for the session's TTL and the page keeps no handle to it.
+window.addEventListener('beforeunload', (e) => {
+  const s = useEditor.getState();
+  if (!s.ops.length || s.revision === s.downloadedRevision) return;
+  e.preventDefault();
+  // Older Chrome/Safari only show the prompt when returnValue is set.
+  e.returnValue = '';
+});

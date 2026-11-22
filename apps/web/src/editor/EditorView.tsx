@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentInfo, EditOperation } from '@pdf-toolkit/shared';
 import { apiError, downloadBlob } from '../lib/api.ts';
+import { askConfirm, askPassword } from '../lib/Dialogs.tsx';
 import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
 import { opPage } from './Changes.tsx';
 import { FontPicker } from './FontPicker.tsx';
@@ -10,6 +11,10 @@ import { track, useEditor } from './store.ts';
 
 function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ block: 'nearest' });
+  }, [active]);
   useEffect(() => {
     let alive = true;
     renderThumbnail(pdf, index + 1, 220).then((u) => alive && setSrc(u), () => undefined);
@@ -18,7 +23,7 @@ function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc
     };
   }, [pdf, index, revision]);
   return (
-    <button onClick={onClick} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
+    <button ref={ref} onClick={onClick} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
       {src ? <img src={src} alt={`Page ${index + 1}`} className="w-full bg-white shadow" /> : <div className="h-36 animate-pulse bg-slate-200" />}
       <div className="mt-1 text-center text-xs text-slate-600">{index + 1}</div>
       {changes > 0 && (
@@ -105,6 +110,49 @@ function PromptDialog() {
   );
 }
 
+const SHORTCUTS: [string, string][] = [
+  ['V / T / B', 'Select / Add text / Table tool'],
+  ['PageDown / PageUp', 'Scroll the page, then go to the next / previous page'],
+  ['Home / End', 'First / last page'],
+  ['Ctrl + wheel, Ctrl + = / −', 'Zoom in / out'],
+  ['Ctrl + 0', 'Fit page width'],
+  ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
+  ['Enter', 'Edit the selected box or cell'],
+  ['Arrows (Shift: 10 pt)', 'Move the selection by 1 pt; in a table, go to the next cell'],
+  ['Tab / Shift + Tab', 'Next / previous table cell'],
+  ['Delete', 'Remove the selection'],
+  ['Ctrl + Enter / Esc', 'Apply / cancel text editing'],
+  ['?', 'Show this list'],
+];
+
+function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" data-testid="shortcuts" className="w-[30rem] rounded-lg bg-white p-4 text-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-center">
+          <h2 id="shortcuts-title" className="flex-1 font-semibold">Keyboard shortcuts</h2>
+          <button aria-label="Close" className="rounded px-2 hover:bg-slate-100" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+          {SHORTCUTS.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="whitespace-nowrap font-mono text-xs leading-5 text-slate-700">{k}</dt>
+              <dd className="text-slate-600">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+const ZOOM_STEP = 1.2;
+// defineTable coordinates refer to the original page, which no longer matches the view once things moved.
+const isGridLocked = (ops: EditOperation[]) => ops.some((o) => ['moveElement', 'tableInsertRow', 'tableDeleteRow', 'tableInsertCol', 'tableDeleteCol', 'resizeTable'].includes(o.type));
+const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || !!t.closest('[aria-modal]'));
+
 const PROGRESS_AFTER_MS = 1500;
 
 /** The latest running activity, once something has run for 1.5 s, with the elapsed time. */
@@ -132,6 +180,9 @@ export function EditorView() {
   const st = useEditor();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const [help, setHelp] = useState(false);
 
   useEffect(() => {
     if (!st.docId) return;
@@ -152,7 +203,14 @@ export function EditorView() {
     };
   }, [st.docId, st.revision]);
 
-  const upload = async (file: File, password?: string) => {
+  const open = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') return st.setError(`${file.name}: not a PDF`);
+    const cur = useEditor.getState();
+    if (cur.ops.length && cur.revision !== cur.downloadedRevision && !(await askConfirm(`Open ${file.name}? Changes to ${cur.fileName} that you haven't downloaded will be lost.`, 'Open'))) return;
+    await upload(file);
+  };
+
+  const upload = async (file: File, password?: string): Promise<void> => {
     st.setBusy(true);
     st.setError(null);
     try {
@@ -163,7 +221,7 @@ export function EditorView() {
       if (!res.ok) {
         const err = await apiError(res);
         if (/\((ENCRYPTED|BAD_PASSWORD)\)/.test(err.message)) {
-          const pw = window.prompt(`${file.name}: ${err.message}\nPassword:`);
+          const pw = await askPassword(`${file.name}: ${err.message.replace(/ \((ENCRYPTED|BAD_PASSWORD)\)$/, '')}`);
           if (pw !== null) return upload(file, pw);
         }
         throw err;
@@ -178,18 +236,107 @@ export function EditorView() {
     }
   };
 
+  const [downloading, setDownloading] = useState(false);
+  // Changes still queued or being applied (a pending nudge, an edit's scan measuring) go into the file too.
   const download = async () => {
-    const res = await fetch(`/api/documents/${st.docId}/download`);
-    if (!res.ok) return st.setError((await apiError(res)).message);
-    downloadBlob(await res.blob(), st.fileName.replace(/\.pdf$/i, '') + (st.revision ? '-edited.pdf' : '.pdf'));
+    setDownloading(true);
+    try {
+      await track('Preparing the download…', async () => {
+        await useEditor.getState().settle();
+        const { docId, revision, fileName } = useEditor.getState();
+        const res = await fetch(`/api/documents/${docId}/download`);
+        if (!res.ok) throw await apiError(res);
+        downloadBlob(await res.blob(), fileName.replace(/\.pdf$/i, '') + (revision ? '-edited.pdf' : '.pdf'));
+        useEditor.getState().setDownloaded(revision);
+      });
+    } catch (e) {
+      st.setError((e as Error).message);
+    } finally {
+      setDownloading(false);
+    }
   };
 
+  const fitWidth = () => {
+    const m = useEditor.getState().pages[useEditor.getState().pageIndex];
+    const el = sectionRef.current;
+    if (!m || !el) return;
+    const [w, h] = [m.view.x1 - m.view.x0, m.view.y1 - m.view.y0];
+    // p-6 padding on both sides, plus room for a vertical scrollbar.
+    st.setZoom((el.clientWidth - 48 - 16) / (m.rotate % 180 ? h : w));
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const s = useEditor.getState();
+      if (!s.docId || s.prompt || typing(e.target)) return;
+      if (e.ctrlKey || e.metaKey) {
+        const zoom = { '=': ZOOM_STEP, '+': ZOOM_STEP, '-': 1 / ZOOM_STEP }[e.key];
+        if (zoom) s.setZoom(s.zoom * zoom);
+        else if (e.key === '0') fitWidth();
+        else return;
+        e.preventDefault();
+        return;
+      }
+      if (e.altKey) return;
+      const el = sectionRef.current;
+      const last = s.pages.length - 1;
+      if (e.key === 'PageDown' || e.key === 'PageUp') {
+        e.preventDefault();
+        if (!el) return;
+        const down = e.key === 'PageDown';
+        const canScroll = down ? el.scrollTop + el.clientHeight < el.scrollHeight - 2 : el.scrollTop > 2;
+        if (canScroll) el.scrollBy({ top: (down ? 0.9 : -0.9) * el.clientHeight });
+        else if (down ? s.pageIndex < last : s.pageIndex > 0) {
+          s.setPage(s.pageIndex + (down ? 1 : -1));
+          requestAnimationFrame(() => (el.scrollTop = down ? 0 : el.scrollHeight));
+        }
+      } else if (e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        s.setPage(e.key === 'Home' ? 0 : last);
+      } else if (e.key === '?') {
+        setHelp((h) => !h);
+      } else if (!s.tableSetup && !s.editingId && !s.editingCell) {
+        const tool = ({ v: 'select', t: 'addText', b: 'table' } as const)[e.key.toLowerCase() as 'v' | 't' | 'b'];
+        if (!tool || (tool === 'table' && isGridLocked(s.ops))) return;
+        s.setTool(tool);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    const el = sectionRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const s = useEditor.getState();
+      s.setZoom(s.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [st.docId]);
+
   const model = st.pages[st.pageIndex];
-  // defineTable coordinates refer to the original page, which no longer matches the view once things moved.
-  const gridLocked = st.ops.some((o) => ['moveElement', 'tableInsertRow', 'tableDeleteRow', 'tableInsertCol', 'tableDeleteCol', 'resizeTable'].includes(o.type));
+  const gridLocked = isGridLocked(st.ops);
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="relative flex h-full flex-col"
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return;
+        e.preventDefault();
+        setDropActive(true);
+      }}
+      onDragLeave={(e) => e.currentTarget === e.target && setDropActive(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDropActive(false);
+        const f = e.dataTransfer.files[0];
+        if (f) void open(f);
+      }}
+    >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-sm">
         <button className="rounded bg-slate-900 px-3 py-1.5 text-white" onClick={() => inputRef.current?.click()} disabled={st.busy}>
           Open PDF
@@ -202,7 +349,7 @@ export function EditorView() {
           data-testid="editor-input"
           onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) void upload(f);
+            if (f) void open(f);
             e.target.value = '';
           }}
         />
@@ -210,16 +357,19 @@ export function EditorView() {
           <>
             <span className="max-w-xs truncate font-medium">{st.fileName}</span>
             <div className="ml-4 flex items-center gap-1">
-              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / 1.2)} title="Zoom out">−</button>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / ZOOM_STEP)} title="Zoom out (Ctrl + −)">−</button>
               <span className="w-12 text-center tabular-nums">{Math.round(st.zoom * 100)}%</span>
-              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * 1.2)} title="Zoom in">+</button>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * ZOOM_STEP)} title="Zoom in (Ctrl + =)">+</button>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={fitWidth} title="Fit page width (Ctrl + 0)" data-testid="fit-width">
+                Fit
+              </button>
             </div>
             <div className="ml-4 flex items-center gap-1" data-testid="tools">
               {(
                 [
-                  ['select', 'Select', 'Select, move, resize and edit (Delete removes the selection)'],
-                  ['addText', 'Add text', 'Click on the page to add a text box'],
-                  ['table', 'Table', 'Click a detected table or drag a rectangle around one, then align the mesh vertices to the cell corners and Confirm'],
+                  ['select', 'Select', 'Select, move, resize and edit (Delete removes the selection) — V'],
+                  ['addText', 'Add text', 'Click on the page to add a text box — T'],
+                  ['table', 'Table', 'B — Click a detected table or drag a rectangle around one, then align the mesh vertices to the cell corners and Confirm'],
                 ] as const
               ).map(([t, label, title]) => (
                 <button
@@ -242,17 +392,47 @@ export function EditorView() {
                 ↷
               </button>
             </div>
-            <button className="ml-auto rounded bg-emerald-600 px-3 py-1.5 text-white" onClick={() => void download()}>
+            <button className="ml-auto rounded px-2 py-1 text-slate-600 hover:bg-slate-100" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
+              ?
+            </button>
+            <button data-testid="download" className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60" disabled={downloading} onClick={() => void download()}>
               Download
             </button>
           </>
         )}
       </div>
-      {st.error && <div data-testid="editor-error" className="bg-red-50 px-4 py-2 text-sm text-red-700">{st.error}</div>}
+      {st.error && (
+        <div data-testid="editor-error" role="alert" className="flex items-start gap-2 bg-red-50 px-4 py-2 text-sm text-red-700">
+          <span className="flex-1">{st.error}</span>
+          <button aria-label="Dismiss" title="Dismiss" className="rounded px-1 leading-5 hover:bg-red-100" onClick={() => st.setError(null)}>
+            ×
+          </button>
+        </div>
+      )}
       <PromptDialog />
       <ProgressBanner />
+      {help && <ShortcutHelp onClose={() => setHelp(false)} />}
+      {dropActive && st.docId && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-4 border-dashed border-sky-500 bg-sky-50/70 text-lg font-medium text-sky-700">Drop to open this PDF</div>
+      )}
       {!st.docId ? (
-        <div className="flex flex-1 items-center justify-center text-slate-500">{st.busy ? 'Analyzing…' : 'Open a PDF to edit it.'}</div>
+        <div className="flex flex-1 items-center justify-center p-8">
+          <button
+            data-testid="editor-dropzone"
+            disabled={st.busy}
+            onClick={() => inputRef.current?.click()}
+            className={`flex h-64 w-full max-w-xl flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed text-slate-500 ${dropActive ? 'border-sky-500 bg-sky-50 text-sky-700' : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50'}`}
+          >
+            {st.busy ? (
+              'Analysing…'
+            ) : (
+              <>
+                <span className="text-base font-medium text-slate-700">Drop a PDF here to edit it</span>
+                <span className="text-sm">or click to choose a file</span>
+              </>
+            )}
+          </button>
+        </div>
       ) : (
         <div className="flex min-h-0 flex-1">
           <aside className="w-36 shrink-0 space-y-2 overflow-y-auto border-r border-slate-200 bg-slate-50 p-2">
@@ -261,7 +441,7 @@ export function EditorView() {
                 <Thumb key={i} pdf={pdf} index={i} revision={st.revision} active={i === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === i).length} onClick={() => st.setPage(i)} />
               ))}
           </aside>
-          <section className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
+          <section ref={sectionRef} className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
             {st.warnings.length > 0 && (
               <ul className="mx-auto mb-3 max-w-3xl rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {st.warnings.map((w) => (

@@ -131,6 +131,9 @@ Behaviour:
 | `image-table.pdf` | 3 × 4 table with a picture in a body cell, text, a rule and a logo under it |
 | `scanned-table.pdf` | image-only page: a scanned 4-column, 5-row table (grey header row) with text bars above and below |
 | `scanned-table-rotated.pdf` | the same page with the scan stored a quarter turn round and placed rotated back |
+| `paged-table.pdf` | 2 pages with a running header (text + rule) and a "Page N" footer; page 1 ends with a 4 × 4 table (2 pt outer top/bottom border) and a line under it, page 2 has body text (table paging) |
+| `paged-scan.pdf` | one scanned page at 2 px/pt (Flate, grey): header and footer bars, text bars, a bordered 4 × 4 table near the bottom and a bar below it |
+| `paged-scan-jpeg.pdf` | the same scan stored as a JPEG (DCTDecode, RGB), like most scanner output |
 
 ## License note
 

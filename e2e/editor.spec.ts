@@ -24,6 +24,19 @@ async function open(page: Page, name: string) {
 
 const changes = (page: Page) => page.getByTestId('change-item');
 
+test('download right after a nudge includes the move', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  const box = page.getByTestId('text-box').first();
+  await box.click();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
+  // The nudge is still waiting for its debounce when Download is clicked.
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const edited = await textItems(new Uint8Array(readFileSync((await download.path())!)));
+  const original = await textItems(new Uint8Array(readFileSync(fixture('latin-standard14.pdf'))));
+  const before = original.find((i) => i.str === 'Quarterly Report')!;
+  expect(edited.find((i) => i.str === 'Quarterly Report')!.x).toBeCloseTo(before.x + 3, 3);
+});
+
 test('edit text, nudge, restyle, undo one change and download', async ({ page }) => {
   await open(page, 'latin-standard14.pdf');
   const box = page.getByTestId('text-box').first();

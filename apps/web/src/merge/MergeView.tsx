@@ -1,6 +1,7 @@
 import { useRef, useState, type DragEvent } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import { apiError, downloadBlob } from '../lib/api.ts';
+import { askPassword } from '../lib/Dialogs.tsx';
 import { Thumbnail } from './Thumbnail.tsx';
 import { toSegments, useMergeStore } from './store.ts';
 
@@ -16,7 +17,7 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
       return { pageCount, password };
     } catch (e) {
       if (e instanceof Error && e.name === 'PasswordException') {
-        const pw = window.prompt(`${name} is password-protected. Password:`);
+        const pw = await askPassword(password === undefined ? `${name} is password-protected.` : `Wrong password for ${name}. Try again.`);
         if (pw === null) throw new Error(`${name}: password required`);
         password = pw;
         continue;
