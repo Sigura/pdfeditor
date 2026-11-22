@@ -293,7 +293,12 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   const onPageMouseDown = (e: React.MouseEvent) => {
     if (tool !== 'table' || tableSetup || !vp) return;
     const [x, y] = local(e);
-    if (inFlow(...(vp.convertToPdfPoint(x, y) as [number, number]))) return flowError();
+    const [px, py] = vp.convertToPdfPoint(x, y) as [number, number];
+    if (inFlow(px, py)) {
+      const from = flowSource(py);
+      if (!from) return flowError();
+      return useEditor.getState().setError(`This area continues page ${from.src + 1}: set up the table there, where it starts.`);
+    }
     setDraw({ x0: x, y0: y, x1: x, y1: y });
     const move = (ev: MouseEvent) => {
       const [x1, y1] = local(ev);
