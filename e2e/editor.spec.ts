@@ -1087,3 +1087,47 @@ test('merge: Shift/Ctrl+click select pages; R, Delete and drag act on the whole 
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('merge-selection')).toHaveCount(0);
 });
+
+test('merge export: selected pages as a PDF, each file and every N pages as a zip', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([fixture('labelled.pdf'), fixture('table.pdf')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(5);
+  const pdfPages = async (bytes: Uint8Array) => {
+    const doc = await getDocument({ data: bytes, isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+    const n = doc.numPages;
+    await doc.destroy();
+    return n;
+  };
+  const exportVia = async (testId: string) => {
+    await page.getByTestId('merge-export').click();
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId(testId).click()]);
+    return { name: download.suggestedFilename(), path: (await download.path())! };
+  };
+  const unzip = (file: string) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'export-'));
+    execFileSync('unzip', ['-q', file, '-d', dir]);
+    return dir;
+  };
+
+  await items.nth(1).click({ position: { x: 20, y: 60 } });
+  await items.nth(4).click({ position: { x: 20, y: 60 }, modifiers: ['Control'] });
+  const sel = await exportVia('export-selected');
+  expect(sel.name).toBe('labelled-selected.pdf');
+  expect(await pdfPages(new Uint8Array(readFileSync(sel.path)))).toBe(2);
+
+  const perFile = await exportVia('export-files');
+  expect(perFile.name).toBe('labelled-files.zip');
+  const d1 = unzip(perFile.path);
+  expect(await pdfPages(new Uint8Array(readFileSync(path.join(d1, 'labelled.pdf'))))).toBe(4);
+  expect(await pdfPages(new Uint8Array(readFileSync(path.join(d1, 'table.pdf'))))).toBe(1);
+
+  await page.getByTestId('merge-export').click();
+  await page.getByTestId('export-every').fill('2');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('export-menu')).toHaveCount(0);
+  const split = await exportVia('export-split');
+  const d2 = unzip(split.path);
+  expect(execFileSync('ls', [d2]).toString().trim().split('\n')).toEqual(['labelled-part1.pdf', 'labelled-part2.pdf', 'labelled-part3.pdf']);
+  expect(await pdfPages(new Uint8Array(readFileSync(path.join(d2, 'labelled-part3.pdf'))))).toBe(1);
+});

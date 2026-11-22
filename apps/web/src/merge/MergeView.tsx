@@ -3,11 +3,13 @@ import * as pdfjs from 'pdfjs-dist';
 import { apiError, downloadBlob, serverLimits } from '../lib/api.ts';
 import { askConfirm, askPassword, modalOpen } from '../lib/Dialogs.tsx';
 import { track } from '../lib/progress.tsx';
-import { droppedFiles, isZip, naturalCompare, readZip } from '../lib/zip.ts';
+import { droppedFiles, isZip, naturalCompare, readZip, uniqueName, writeZip } from '../lib/zip.ts';
 import { Thumbnail } from './Thumbnail.tsx';
-import { BLANK, toSegments, useMergeStore } from './store.ts';
+import { BLANK, toSegments, useMergeStore, type PageItem } from './store.ts';
 
 const mb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
+
+type Running = 'download' | 'edit' | 'export';
 
 const COLORS = ['bg-sky-500', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500', 'bg-violet-500', 'bg-lime-500'];
 
@@ -37,7 +39,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
-  const [running, setRunning] = useState<'download' | 'edit' | null>(null);
+  const [running, setRunning] = useState<Running | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const fileIds = Object.keys(files);
@@ -123,24 +125,29 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
   const firstFile = files[pages.find((p) => p.fileId !== BLANK)?.fileId ?? ''];
   const outName = `${(firstFile?.name ?? 'document').replace(/\.pdf$/i, '')}-merged.pdf`;
 
-  const merge = async (action: 'download' | 'edit', then: (blob: Blob) => void) => {
+  /** The merged PDF of `list` (a subset of the pages, in its order). */
+  const mergeBlob = async (list: PageItem[], label: string): Promise<Blob> => {
+    const used = fileIds.filter((id) => list.some((p) => p.fileId === id));
+    const limits = await serverLimits();
+    if (used.length > limits.maxFiles) throw new Error(`The pages come from ${used.length} files; one merge takes at most ${limits.maxFiles}. Merge in parts, then merge the results.`);
+    const form = new FormData();
+    for (const id of used) {
+      const f = files[id]!;
+      form.append('files', new Blob([f.bytes.slice()], { type: 'application/pdf' }), f.name);
+    }
+    form.append('segments', JSON.stringify(toSegments(list, used)));
+    form.append('passwords', JSON.stringify(used.map((id) => files[id]!.password ?? '')));
+    const res = await track(label, () => fetch('/api/merge', { method: 'POST', body: form }));
+    if (!res.ok) throw await apiError(res);
+    return res.blob();
+  };
+
+  const run = async (action: Running, job: () => Promise<void>) => {
     setBusy(true);
     setRunning(action);
     setError(null);
     try {
-      const used = fileIds.filter((id) => pages.some((p) => p.fileId === id));
-      const limits = await serverLimits();
-      if (used.length > limits.maxFiles) throw new Error(`The pages come from ${used.length} files; one merge takes at most ${limits.maxFiles}. Merge in parts, then merge the results.`);
-      const form = new FormData();
-      for (const id of used) {
-        const f = files[id]!;
-        form.append('files', new Blob([f.bytes.slice()], { type: 'application/pdf' }), f.name);
-      }
-      form.append('segments', JSON.stringify(toSegments(pages, used)));
-      form.append('passwords', JSON.stringify(used.map((id) => files[id]!.password ?? '')));
-      const res = await track(`Merging ${pages.length} page${pages.length === 1 ? '' : 's'}…`, () => fetch('/api/merge', { method: 'POST', body: form }));
-      if (!res.ok) throw await apiError(res);
-      then(await res.blob());
+      await job();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -148,6 +155,54 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       setRunning(null);
     }
   };
+
+  const merge = (action: 'download' | 'edit', then: (blob: Blob) => void) => run(action, async () => then(await mergeBlob(pages, `Merging ${pages.length} page${pages.length === 1 ? '' : 's'}…`)));
+
+  const base = outName.replace(/-merged\.pdf$/, '');
+  /** Several PDFs from the page list, in one zip; parts without pages from a file are left out. */
+  const exportZip = (parts: { name: string; pages: PageItem[] }[], zipName: string) =>
+    run('export', async () => {
+      const used = new Set<string>();
+      const out: { name: string; bytes: Uint8Array }[] = [];
+      const real = parts.filter((part) => part.pages.some((p) => p.fileId !== BLANK));
+      for (const [i, part] of real.entries()) {
+        const blob = await mergeBlob(part.pages, `Exporting ${part.name} (${i + 1}/${real.length})…`);
+        out.push({ name: uniqueName(part.name, used), bytes: new Uint8Array(await blob.arrayBuffer()) });
+      }
+      downloadBlob(writeZip(out), zipName);
+    });
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!exportOpen) return;
+    const close = (e: MouseEvent) => !exportRef.current?.contains(e.target as Node) && setExportOpen(false);
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [exportOpen]);
+  const [every, setEvery] = useState(1);
+  const exports = [
+    {
+      label: `Selected pages (${selected.length}) as one PDF`,
+      testId: 'export-selected',
+      disabled: !pages.some((p) => p.fileId !== BLANK && selected.includes(p.key)),
+      go: () => run('export', async () => downloadBlob(await mergeBlob(pages.filter((p) => selected.includes(p.key)), `Exporting ${selected.length} pages…`), `${base}-selected.pdf`)),
+    },
+    {
+      label: 'Each file as its own PDF (zip)',
+      testId: 'export-files',
+      disabled: !hasPages,
+      go: () => exportZip(fileIds.map((id) => ({ name: files[id]!.name, pages: pages.filter((p) => p.fileId === id) })), `${base}-files.zip`),
+    },
+    {
+      label: `Every ${every} page${every === 1 ? '' : 's'} as a PDF (zip)`,
+      testId: 'export-split',
+      disabled: !hasPages,
+      go: () => {
+        const parts = Array.from({ length: Math.ceil(pages.length / every) }, (_, k) => ({ name: `${base}-part${String(k + 1).padStart(String(Math.ceil(pages.length / every)).length, '0')}.pdf`, pages: pages.slice(k * every, (k + 1) * every) }));
+        return exportZip(parts, `${base}-split.zip`);
+      },
+    },
+  ];
 
   return (
     <div
@@ -207,6 +262,57 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
         >
           {running === 'edit' ? 'Merging…' : 'Edit result'}
         </button>
+        <div
+          ref={exportRef}
+          className="relative"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && exportOpen) {
+              e.stopPropagation();
+              setExportOpen(false);
+            }
+          }}
+        >
+          <button
+            data-testid="merge-export"
+            aria-haspopup="true"
+            aria-expanded={exportOpen}
+            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
+            title="Download parts of the list: the selected pages, each file, or every N pages"
+            disabled={!hasPages || busy}
+            onClick={() => setExportOpen((o) => !o)}
+          >
+            {running === 'export' ? 'Exporting…' : 'Export ▾'}
+          </button>
+          {exportOpen && (
+            <div data-testid="export-menu" className="absolute top-full left-0 z-30 mt-1 grid w-72 gap-1 rounded border border-slate-300 bg-white p-2 text-sm shadow-lg">
+              {exports.map((x) => (
+                <button
+                  key={x.testId}
+                  data-testid={x.testId}
+                  className="rounded px-2 py-1 text-left hover:bg-slate-100 disabled:opacity-40"
+                  disabled={x.disabled || busy}
+                  onClick={() => {
+                    setExportOpen(false);
+                    void x.go();
+                  }}
+                >
+                  {x.label}
+                </button>
+              ))}
+              <label className="flex items-center gap-2 px-2 text-xs text-slate-600">
+                Pages per part
+                <input
+                  type="number"
+                  min={1}
+                  data-testid="export-every"
+                  className="w-16 rounded border border-slate-300 px-1"
+                  value={every}
+                  onChange={(e) => setEvery(Math.max(1, Math.floor(Number(e.target.value)) || 1))}
+                />
+              </label>
+            </div>
+          )}
+        </div>
         <button
           data-testid="merge-undo"
           className="rounded px-3 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
