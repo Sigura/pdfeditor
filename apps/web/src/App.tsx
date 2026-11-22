@@ -2,9 +2,24 @@ import { useState } from 'react';
 import { MergeView } from './merge/MergeView.tsx';
 import { EditorView } from './editor/EditorView.tsx';
 import { Dialogs } from './lib/Dialogs.tsx';
-import { ProgressBanner } from './lib/progress.tsx';
-import { useEditor } from './editor/store.ts';
-import { useMergeStore } from './merge/store.ts';
+import { StatusBar } from './lib/progress.tsx';
+import { hasUnsaved, pageNo, pageOrder, useEditor } from './editor/store.ts';
+import { BLANK, useMergeStore } from './merge/store.ts';
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function IdleStatus({ tab }: { tab: Tab }) {
+  const merge = useMergeStore();
+  const ed = useEditor();
+  if (tab === 'merge') {
+    const files = Object.keys(merge.files).length;
+    return <>{files ? `Ready · ${plural(files, 'file')} · ${plural(merge.pages.length, 'page')}${merge.pages.some((p) => p.fileId === BLANK) ? ' (with blanks)' : ''}` : 'Ready'}</>;
+  }
+  if (!ed.docId) return <>Ready</>;
+  const count = pageNo(ed, ed.pageIndex) > 0 ? `page ${pageNo(ed, ed.pageIndex)} of ${pageOrder(ed.ops, ed.pages).length}` : '';
+  const saved = !ed.ops.length ? 'no changes' : `${plural(ed.ops.length, 'change')} · ${hasUnsaved(ed) ? 'not downloaded' : 'downloaded'}`;
+  return <>{['Ready', ed.fileName, count, saved].filter(Boolean).join(' · ')}</>;
+}
 
 const TAB_LABEL = { merge: 'Merge & Pages', edit: 'Edit' };
 
@@ -45,7 +60,7 @@ export function App() {
           />
         )}
       </main>
-      <ProgressBanner />
+      <StatusBar idle={<IdleStatus tab={tab} />} />
       <Dialogs />
     </div>
   );

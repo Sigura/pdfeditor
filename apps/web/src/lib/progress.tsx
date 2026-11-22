@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { create } from 'zustand';
 
 export type Activity = { id: number; label: string; since: number };
@@ -26,25 +26,31 @@ export async function track<T>(label: string, fn: (step: (label: string) => void
   }
 }
 
-const PROGRESS_AFTER_MS = 1500;
+const PROGRESS_AFTER_MS = 300;
 
-/** The latest running activity, once something has run for 1.5 s, with the elapsed time. */
-export function ProgressBanner() {
+/** Status bar: the latest running activity once something has run for 0.3 s, with the elapsed time; `idle` otherwise. */
+export function StatusBar({ idle }: { idle: ReactNode }) {
   const activities = useActivities((s) => s.activities);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!activities.length) return;
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, [activities.length]);
   const oldest = activities[0];
-  if (!oldest || now - oldest.since < PROGRESS_AFTER_MS) return null;
-  const latest = activities.at(-1)!;
+  const running = oldest && now - oldest.since >= PROGRESS_AFTER_MS;
   return (
-    <div data-testid="progress" role="status" className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
-      <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-      <span>{latest.label}</span>
-      <span className="tabular-nums text-white/60">{((now - oldest.since) / 1000).toFixed(1)} s</span>
-    </div>
+    <footer data-testid="status-bar" className="flex h-7 shrink-0 items-center gap-2 border-t border-slate-200 bg-white px-4 text-xs text-slate-600">
+      {running ? (
+        <span data-testid="progress" className="flex items-center gap-2 text-slate-900">
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
+          <span role="status">{activities.at(-1)!.label}</span>
+          <span aria-hidden className="tabular-nums text-slate-500">{((now - oldest.since) / 1000).toFixed(1)} s</span>
+        </span>
+      ) : (
+        <span role="status" data-testid="status-idle">{idle}</span>
+      )}
+    </footer>
   );
 }

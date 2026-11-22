@@ -799,6 +799,7 @@ test('page list changes are named in the Changes list', async ({ page }) => {
   await tool(1, 'thumb-delete');
   await expect(last()).toHaveText(/Delete page 2/);
   await expect(changes(page)).toHaveCount(4);
+  await expect(page.getByTestId('status-idle')).toHaveText(/^Ready · paged-table\.pdf · page \d of 2 · 4 changes · not downloaded$/);
 });
 
 test('merge: a zip adds its PDFs in natural order; errors are all listed; Delete keeps the focus on a page', async ({ page }) => {
@@ -818,6 +819,7 @@ test('merge: a zip adds its PDFs in natural order; errors are all listed; Delete
   // Natural order of the paths inside the zip, so a folder's files stay together.
   expect(names).toEqual(['file2.pdf page 1', 'file2.pdf page 2', 'file10.pdf page 1', 'File01.pdf page 1']);
   await expect(page.getByTestId('merge-error')).toHaveText(/empty\.zip: no PDF files inside\s+notes\.txt: not a PDF or zip/);
+  await expect(page.getByTestId('status-idle')).toHaveText('Ready · 3 files · 4 pages');
   await items.nth(1).focus();
   await page.keyboard.press('Delete');
   await expect(items).toHaveCount(3);
