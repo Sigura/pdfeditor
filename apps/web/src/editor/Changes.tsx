@@ -54,7 +54,10 @@ function describe(op: EditOperation, name: string, before: EditOperation[]): str
     case 'moveElement':
       return op.width !== undefined ? `Resize ${name}` : `Move ${name} (${op.dx.toFixed(1)}, ${op.dy.toFixed(1)} pt)${op.background ? ', fill' : ''}`;
     case 'setTextStyle':
-      return `Style ${name}: ${[op.color && 'colour', op.align, op.lineSpacing !== undefined && `spacing ${op.lineSpacing}`, op.background !== undefined && (op.background ? 'fill' : 'no fill')].filter(Boolean).join(', ')}`;
+    {
+      const parts = [op.color && 'colour', op.align, op.lineSpacing !== undefined && `spacing ${op.lineSpacing}`, op.background !== undefined && (op.background ? 'fill' : 'no fill')].filter(Boolean);
+      return parts.length ? `Style ${name}: ${parts.join(', ')}` : `Style ${name}`;
+    }
     case 'tableInsertRow':
       return `Insert row ${op.position} ${op.index + 1}`;
     case 'tableDeleteRow':
@@ -141,7 +144,8 @@ export function ChangesList() {
                 {page !== undefined && pageNo({ ops, pages }, page) > 0 && <span className="ml-1 text-slate-400">p{pageNo({ ops, pages }, page)}</span>}
               </button>
               <button
-                className="rounded px-1 text-slate-400 opacity-40 group-hover:opacity-100 hover:bg-red-100 hover:text-red-700 disabled:opacity-20"
+                aria-label="Undo only this change"
+                className="rounded px-1 text-slate-400 opacity-40 group-hover:opacity-100 hover:bg-red-100 hover:text-red-700 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-red-500 disabled:opacity-20"
                 disabled={busy}
                 title="Undo only this change"
                 data-testid="change-undo"

@@ -39,7 +39,7 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     return a;
   };
 
-  app.get('/api/health', (c) => c.json({ ok: true }));
+  app.get('/api/health', (c) => c.json({ ok: true, limits: { maxFileBytes: config.maxFileBytes, maxFiles: config.maxFiles } }));
 
   // Installed fonts (local folder, bundled packages, system), one entry per PostScript name as the
   // substitute lookup sees them; `id` is valid until the server restarts.
@@ -167,7 +167,10 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
       throw new HttpError(400, 'BAD_REQUEST', 'Body must be JSON');
     });
     const parsed = EditBatchSchema.safeParse(raw);
-    if (!parsed.success) throw new HttpError(400, 'BAD_REQUEST', 'Invalid edit batch', parsed.error.issues);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0]!;
+      throw new HttpError(400, 'BAD_REQUEST', `Invalid edit batch: ${first.path.join('.') || 'body'}: ${first.message}`, parsed.error.issues);
+    }
     const body = await withLock(id, async () => {
       const meta = await store.meta(id);
       const ops = parsed.data.mode === 'replace' ? parsed.data.ops : [...meta.ops, ...parsed.data.ops];

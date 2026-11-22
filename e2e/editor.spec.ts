@@ -717,12 +717,40 @@ test('installed fonts: the picker lists bundled fonts with their licence, and ne
   await expect(page.getByTestId('installed-family')).toHaveCount(1);
   await page.locator('[data-testid="installed-font"][data-ps="Arimo-Bold"]').click();
   await expect(page.getByTestId('font-picker').getByTitle('Font for new text')).toContainText('Arimo-Bold');
+  await page.getByTestId('font-picker').getByTitle('Font for new text').click();
+  await expect(page.getByTestId('installed-fonts')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('installed-fonts')).toHaveCount(0);
+  // Typed key by key: a clamp per keystroke turned the "1" into 4.
+  await page.getByTestId('font-size').fill('');
+  await page.getByTestId('font-size').pressSequentially('16');
+  await expect(page.getByTestId('font-size')).toHaveValue('16');
+  await page.getByTestId('font-size').press('Enter');
 
   const ov = (await page.getByTestId('overlay').boundingBox())!;
   const added = page.waitForResponse((r) => r.url().endsWith('/edits') && r.request().postDataJSON().ops[0]?.type === 'addTextBox');
   await page.getByTestId('overlay').click({ position: { x: ov.width * 0.2, y: ov.height * 0.6 } });
   const res = await added;
   expect(res.request().postDataJSON().ops[0].fontFamily).toBe('Arimo-Bold');
+  expect(res.request().postDataJSON().ops[0].fontSize).toBe(16);
   const report = (await res.json()).reports.find((r: { elementId: string }) => r.elementId === res.request().postDataJSON().ops[0].id);
   expect(report).toMatchObject({ strategy: 'substitute', substituteFont: 'Arimo-Bold' });
+});
+
+test('merge: a removed page comes back with Ctrl+Z, Alt+arrows move the focused page', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(2);
+  await items.first().hover();
+  await items.first().getByTestId('page-delete').click();
+  await expect(items).toHaveCount(1);
+  await expect(items.first()).toContainText('p.2');
+  await page.keyboard.press('Control+z');
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText('p.1');
+  await items.first().focus();
+  await page.keyboard.press('Alt+ArrowRight');
+  await expect(items.first()).toContainText('p.2');
+  await expect(items.nth(1)).toBeFocused();
 });

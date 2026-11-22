@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { releasePdfDocs } from './Thumbnail.tsx';
 
 export type SourceFile = { id: string; name: string; bytes: Uint8Array; pageCount: number; password?: string };
 /**
@@ -26,6 +27,9 @@ type MergeState = {
   incoming: File[];
   setIncoming: (files: File[]) => void;
   removeFile: (fileId: string) => void;
+  /** States before each page or file removal, newest last. */
+  undoStack: { files: Record<string, SourceFile>; pages: PageItem[] }[];
+  undoRemove: () => void;
   clear: () => void;
   setBusy: (busy: boolean) => void;
   setError: (error: string | null) => void;
@@ -51,7 +55,7 @@ export const useMergeStore = create<MergeState>((set) => ({
       pages.splice(to, 0, item);
       return { pages };
     }),
-  removePage: (key) => set((s) => ({ pages: s.pages.filter((p) => p.key !== key) })),
+  removePage: (key) => set((s) => ({ pages: s.pages.filter((p) => p.key !== key), undoStack: pushUndo(s) })),
   rotatePage: (key) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: (p.rotate + 90) % 360 } : p)) })),
   insertBlank: (index) =>
     set((s) => {
@@ -68,16 +72,29 @@ export const useMergeStore = create<MergeState>((set) => ({
       pages.splice(i + 1, 0, { ...src, key: `${key}+${++blankId}`, copyOf: src.copyOf ?? key });
       return { pages };
     }),
-  removeFile: (fileId) =>
+  removeFile: (fileId) => {
+    releasePdfDocs([fileId]);
     set((s) => {
       const files = { ...s.files };
       delete files[fileId];
-      return { files, pages: s.pages.filter((p) => p.fileId !== fileId) };
+      return { files, pages: s.pages.filter((p) => p.fileId !== fileId), undoStack: pushUndo(s) };
+    });
+  },
+  undoStack: [],
+  undoRemove: () =>
+    set((s) => {
+      const last = s.undoStack.at(-1);
+      return last ? { ...last, undoStack: s.undoStack.slice(0, -1) } : s;
     }),
-  clear: () => set({ files: {}, pages: [], error: null }),
+  clear: () => {
+    releasePdfDocs();
+    set({ files: {}, pages: [], error: null, undoStack: [] });
+  },
   setBusy: (busy) => set({ busy }),
   setError: (error) => set({ error }),
 }));
+
+const pushUndo = (s: MergeState) => [...s.undoStack.slice(-49), { files: s.files, pages: s.pages }];
 
 export type Segment = { file: number; pages: string; rotate?: number } | { blank: true } | { copy: number };
 

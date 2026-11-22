@@ -1,12 +1,35 @@
 import type { ApiError, EditOperation, EditResult } from '@pdf-toolkit/shared';
 
-export async function apiError(res: Response): Promise<Error> {
-  try {
-    const body = (await res.json()) as ApiError;
-    return new Error(`${body.error.message} (${body.error.code})`);
-  } catch {
-    return new Error(`Request failed with HTTP ${res.status}`);
+/** An error response of the API: `message` is a sentence for the user, `code` the server's error code. */
+export class ApiRequestError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
   }
+}
+
+function sentence(code: string, message: string): string {
+  switch (code) {
+    case 'INVALID_EDIT':
+      return `The change couldn't be applied: ${message.replace(/^Op \d+: /, '')}.`.replace(/\.\.$/, '.');
+    case 'INVALID_PDF':
+      return `The file isn't a readable PDF (${message}).`;
+    case 'INVALID_RANGE':
+      return `Page selection: ${message}.`;
+    case 'INTERNAL':
+      return 'Something went wrong on the server. Try again; if it keeps happening, reload the page.';
+    default:
+      return message;
+  }
+}
+
+export async function apiError(res: Response): Promise<ApiRequestError> {
+  let body: ApiError;
+  try {
+    body = (await res.json()) as ApiError;
+  } catch {
+    return new ApiRequestError(`HTTP_${res.status}`, res.status >= 500 ? `The server isn't responding (HTTP ${res.status}). Is the API server running?` : `Request failed with HTTP ${res.status}`);
+  }
+  return new ApiRequestError(body.error.code, sentence(body.error.code, body.error.message));
 }
 
 export function downloadBlob(blob: Blob, name: string) {
@@ -32,6 +55,18 @@ export type InstalledFont = {
   license: { id: string; free: boolean; url?: string };
   embeddable: boolean;
 };
+
+export type ServerLimits = { maxFileBytes: number; maxFiles: number };
+let limits: Promise<ServerLimits> | undefined;
+/** Upload limits the server enforces (MAX_FILE_MB, MAX_FILES). */
+export function serverLimits(): Promise<ServerLimits> {
+  limits ??= fetch('/api/health').then(async (res) => {
+    if (!res.ok) throw await apiError(res);
+    return ((await res.json()) as { limits: ServerLimits }).limits;
+  });
+  limits.catch(() => (limits = undefined));
+  return limits;
+}
 
 let installed: Promise<InstalledFont[]> | undefined;
 export function installedFonts(): Promise<InstalledFont[]> {

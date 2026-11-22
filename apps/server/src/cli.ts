@@ -27,17 +27,27 @@ export function splitFileArg(arg: string): { path: string; pages?: string; rotat
   return { ...(m && m[1] ? { path: m[1], pages: m[2] } : { path: rest }), ...(rotate && { rotate }) };
 }
 
+class CliError extends Error {}
+
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
+  if (cmd === undefined || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    console.log(USAGE);
+    return 0;
+  }
   if (cmd !== 'merge') {
-    console.error(USAGE);
-    return cmd === undefined || cmd === '--help' ? 0 : 2;
+    console.error(`Unknown command "${cmd}".\n\n${USAGE}`);
+    return 2;
   }
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { output: { type: 'string', short: 'o' }, password: { type: 'string', multiple: true } },
+    options: { output: { type: 'string', short: 'o' }, password: { type: 'string', multiple: true }, help: { type: 'boolean', short: 'h' } },
   });
+  if (values.help) {
+    console.log(USAGE);
+    return 0;
+  }
   if (!values.output || positionals.length === 0) {
     console.error(USAGE);
     return 2;
@@ -45,7 +55,12 @@ async function main(argv: string[]): Promise<number> {
   const passwords = new Map<string, string>();
   for (const p of values.password ?? []) {
     const i = p.indexOf('=');
-    if (i > 0) passwords.set(p.slice(0, i), p.slice(i + 1));
+    if (i <= 0) throw new CliError(`--password must be <file>=<password>, got "${p}"`);
+    passwords.set(p.slice(0, i), p.slice(i + 1));
+  }
+  const inputPaths = new Set(positionals.map((a) => splitFileArg(a).path));
+  for (const file of passwords.keys()) {
+    if (!inputPaths.has(file)) throw new CliError(`--password names "${file}", which is not one of the inputs`);
   }
   const inputs: (MergeInput | BlankPage | CopyPage)[] = [];
   for (const arg of positionals) {
@@ -60,7 +75,10 @@ async function main(argv: string[]): Promise<number> {
       continue;
     }
     const { path, pages, rotate } = splitFileArg(arg);
-    inputs.push({ file: new Uint8Array(await readFile(path)), pages, rotate, password: passwords.get(path), name: path.split(/[\\/]/).pop()?.replace(/\.pdf$/i, '') });
+    const bytes = await readFile(path).catch((e: NodeJS.ErrnoException) => {
+      throw new CliError(e.code === 'ENOENT' ? `File not found: ${path}` : e.code === 'EISDIR' ? `Not a file: ${path}` : `Cannot read ${path}: ${e.message}`);
+    });
+    inputs.push({ file: new Uint8Array(bytes), pages, rotate, password: passwords.get(path), name: path.split(/[\\/]/).pop()?.replace(/\.pdf$/i, '') });
   }
   const out = await mergePdfs(inputs);
   await writeFile(values.output, out);
@@ -72,7 +90,7 @@ if (process.argv[1] && /cli\.ts$|pdf-tool(\.mjs)?$/.test(process.argv[1])) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (e: unknown) => {
-      console.error(e instanceof PdfError ? `Error (${e.code}): ${e.message}` : e);
+      console.error(e instanceof PdfError ? `Error (${e.code}): ${e.message}` : e instanceof CliError || (e as { code?: string }).code?.startsWith('ERR_PARSE_ARGS') ? `Error: ${(e as Error).message}` : e);
       process.exit(1);
     },
   );

@@ -10,19 +10,33 @@ import { PageView } from './PageView.tsx';
 import { arrangement, hasUnsaved, pageNo, pageOrder, track, useEditor } from './store.ts';
 import { StraightenBar, TiltBanner } from './Deskew.tsx';
 
-function Thumb({ pdf, index, no, rotate, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
+/** `content` identifies what the page shows: the thumbnail is rendered again only when it changes. */
+function Thumb({ pdf, index, no, rotate, content, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; content: string; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
+  const shownContent = useRef<string>(undefined);
+  const url = useRef<string>(undefined);
   const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (active) ref.current?.scrollIntoView({ block: 'nearest' });
   }, [active]);
   useEffect(() => {
+    if (content === shownContent.current) return;
     let alive = true;
-    renderThumbnail(pdf, index + 1, 220).then((u) => alive && setSrc(u), () => undefined);
+    renderThumbnail(pdf, index + 1, 220).then(
+      (u) => {
+        if (!alive) return URL.revokeObjectURL(u);
+        shownContent.current = content;
+        if (url.current) URL.revokeObjectURL(url.current);
+        url.current = u;
+        setSrc(u);
+      },
+      () => undefined,
+    );
     return () => {
       alive = false;
     };
-  }, [pdf, index, revision]);
+  }, [pdf, index, content]);
+  useEffect(() => () => void (url.current && URL.revokeObjectURL(url.current)), []);
   return (
     <button ref={ref} onClick={onClick} aria-current={active ? 'page' : undefined} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
       {src ? (
@@ -47,8 +61,11 @@ const PAGE_DRAG = 'application/x-pdf-toolkit-page';
  * duplicate, delete). Each change is one arrangePages op, so undo takes it back. Pages added by the flow follow
  * the arranged pages and have no tools.
  */
-function PageList({ pdf }: { pdf: PdfDoc }) {
+function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
   const st = useEditor();
+  // Only from the page models of the revision `pdf` shows, so a thumbnail never renders a stale pdf as new content.
+  const contentKeys = useRef<string[]>([]);
+  if (pdfRevision === st.revision) contentKeys.current = st.pages.map((p, k) => JSON.stringify([st.docId, p, st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k)]));
   const order = pageOrder(st.ops, st.pages);
   const base = st.pages.filter((p) => !p.added).length;
   const arr = arrangement(st.ops);
@@ -56,7 +73,7 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
   const shown = order.filter((k) => k < base);
   const [dragOver, setDragOver] = useState<number | null>(null);
   const commit = (pages: { page: number; rotate: number }[], blanks = arr?.blanks ?? []) =>
-    void st.edit([{ type: 'arrangePages', order: pages.map(({ page, rotate }) => (rotate ? { page, rotate: rotate as 0 | 90 | 180 | 270 } : { page })), blanks }]);
+    st.edit([{ type: 'arrangePages', order: pages.map(({ page, rotate }) => (rotate ? { page, rotate: rotate as 0 | 90 | 180 | 270 } : { page })), blanks }]);
   const entries = () => shown.map((k) => ({ page: k, rotate: rotation(k) }));
   const rotate = (k: number) => commit(entries().map((e) => (e.page === k ? { ...e, rotate: (e.rotate + 90) % 360 } : e)));
   const remove = (k: number) => commit(entries().filter((e) => e.page !== k));
@@ -66,7 +83,7 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
     const turned = (m.rotate + rotation(k)) % 180 !== 0;
     const list = entries();
     list.splice(list.findIndex((e) => e.page === k) + 1, 0, { page: base, rotate: 0 });
-    commit(list, [...(arr?.blanks ?? []), turned ? { width: h, height: w } : { width: w, height: h }]);
+    void commit(list, [...(arr?.blanks ?? []), turned ? { width: h, height: w } : { width: w, height: h }]);
   };
   const duplicate = (k: number) => {
     const list = entries();
@@ -80,7 +97,16 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
     const item = list.splice(list.findIndex((e) => e.page === from), 1)[0]!;
     const at = list.findIndex((e) => e.page === before);
     list.splice(at < 0 ? list.length : at, 0, item);
-    if (list.some((e, i) => e.page !== shown[i])) commit(list);
+    if (list.some((e, i) => e.page !== shown[i])) void commit(list);
+  };
+  const moveBy = async (k: number, step: number) => {
+    const list = entries();
+    const i = list.findIndex((e) => e.page === k);
+    const j = i + step;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j]!, list[i]!];
+    await commit(list);
+    document.querySelector<HTMLElement>(`[data-testid="page-thumb"][data-page="${k}"] > button`)?.focus();
   };
   const tool = 'h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600 disabled:opacity-40';
   return (
@@ -101,6 +127,12 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
               e.stopPropagation();
               setDragOver(k);
             }}
+            onKeyDown={(e) => {
+              const step = own && e.altKey && !st.busy ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : undefined;
+              if (!step) return;
+              e.preventDefault();
+              void moveBy(k, step);
+            }}
             onDragLeave={() => setDragOver(null)}
             onDrop={(e) => {
               if (!e.dataTransfer.types.includes(PAGE_DRAG)) return;
@@ -110,7 +142,7 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
               move(Number(e.dataTransfer.getData(PAGE_DRAG)), k);
             }}
           >
-            <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} revision={st.revision} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
+            <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} content={contentKeys.current[k] ?? ''} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
             {own && (
               <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-focus-within:flex group-hover:flex">
                 <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise" aria-label="Rotate page" onClick={() => rotate(k)}>
@@ -224,9 +256,16 @@ function PageJump() {
   const order = pageOrder(st.ops, st.pages);
   const current = order.indexOf(st.pageIndex) + 1;
   const [draft, setDraft] = useState<string | null>(null);
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => {
+    if (!invalid) return;
+    const t = setTimeout(() => setInvalid(false), 2000);
+    return () => clearTimeout(t);
+  }, [invalid]);
   const go = () => {
     const n = Number(draft);
     if (Number.isInteger(n) && n >= 1 && n <= order.length) st.setPage(order[n - 1]!);
+    else if (draft !== null && draft !== '' && n !== current) setInvalid(true);
     setDraft(null);
   };
   return (
@@ -235,8 +274,10 @@ function PageJump() {
       <input
         data-testid="page-jump"
         aria-label="Go to page"
+        aria-invalid={invalid || undefined}
+        title={invalid ? `No such page: pages are 1–${order.length}` : undefined}
         inputMode="numeric"
-        className="w-10 rounded border border-slate-300 px-1 py-0.5 text-center tabular-nums"
+        className={`w-10 rounded border px-1 py-0.5 text-center tabular-nums ${invalid ? 'border-red-500 ring-2 ring-red-300' : 'border-slate-300'}`}
         value={draft ?? String(current)}
         onFocus={(e) => e.target.select()}
         onChange={(e) => setDraft(e.target.value.replace(/\D/g, ''))}
@@ -250,6 +291,7 @@ function PageJump() {
         }}
       />
       <span className="tabular-nums" data-testid="page-count">/ {order.length}</span>
+      {invalid && <span role="status" className="text-xs text-red-600">pages 1–{order.length}</span>}
     </label>
   );
 }
@@ -258,6 +300,7 @@ const SHORTCUTS: [string, string][] = [
   ['V / T / B', 'Select / Add text / Table tool'],
   ['PageDown / PageUp', 'Scroll the page, then go to the next / previous page'],
   ['Home / End', 'First / last page'],
+  ['Alt + ↑ / ↓', 'Move the focused thumbnail’s page up / down'],
   ['Ctrl + wheel, Ctrl + = / −', 'Zoom in / out'],
   ['Ctrl + 0', 'Fit page width'],
   ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
@@ -382,8 +425,8 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       const res = await track('Uploading and analysing…', () => fetch('/api/documents', { method: 'POST', body: form }));
       if (!res.ok) {
         const err = await apiError(res);
-        if (/\((ENCRYPTED|BAD_PASSWORD)\)/.test(err.message)) {
-          const pw = await askPassword(`${file.name}: ${err.message.replace(/ \((ENCRYPTED|BAD_PASSWORD)\)$/, '')}`);
+        if (err.code === 'ENCRYPTED' || err.code === 'BAD_PASSWORD') {
+          const pw = await askPassword(`${file.name}: ${err.message}`);
           if (pw !== null) return upload(file, pw);
         }
         throw err;
@@ -636,7 +679,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       ) : (
         <div className="flex min-h-0 flex-1">
           <aside className="w-36 shrink-0 space-y-2 overflow-y-auto border-r border-slate-200 bg-slate-50 p-2">
-            {pdf && <PageList pdf={pdf} />}
+            {pdf && <PageList pdf={pdf} pdfRevision={pdfRevision} />}
           </aside>
           <section ref={sectionRef} data-pdf-revision={pdfRevision} className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
             {st.warnings.length > 0 && (

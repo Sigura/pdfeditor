@@ -98,6 +98,32 @@ describe('documents API', () => {
     expect((await app.request('/api/documents/00000000-0000-0000-0000-000000000000/pages/0/model')).status).toBe(404);
     expect((await app.request('/api/documents/../../etc/pages/0/model')).status).toBe(404);
   });
+
+  it('counts the TTL from the last request, not the last edit', async () => {
+    const { mkdtemp, utimes } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { DocumentStore } = await import('../src/store.ts');
+    const root = await mkdtemp(path.join(os.tmpdir(), 'pdft-'));
+    const store = new DocumentStore(root, 60_000);
+    const { app } = createApp({ store });
+    const form = new FormData();
+    form.append('file', new File([await (await makePdf(1, 'Doc')).save()], 'a.pdf'));
+    const { docId } = (await (await app.request('/api/documents', { method: 'POST', body: form })).json()) as { docId: string };
+    const meta = path.join(root, docId, 'meta.json');
+    const old = new Date(Date.now() - 50_000);
+    await utimes(meta, old, old);
+    expect((await app.request(`/api/documents/${docId}/pdf`)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    const store2 = new DocumentStore(root, 30_000);
+    await store2.cleanup();
+    expect((await app.request(`/api/documents/${docId}/pdf`)).status).toBe(200);
+    await utimes(meta, old, old);
+    await store2.cleanup();
+    const gone = await app.request(`/api/documents/${docId}/pdf`);
+    expect(gone.status).toBe(404);
+    expect(((await gone.json()) as { error: { message: string } }).error.message).toMatch(/expired.*Reopen the file/);
+  });
 });
 
 describe('GET /api/fonts/:id/sample.svg', () => {
