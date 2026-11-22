@@ -24,6 +24,7 @@ import {
 } from '@pdf-toolkit/shared';
 import { toCss, type Viewport } from './PageView.tsx';
 import { renderRegion } from './background.ts';
+import { modalOpen } from '../lib/Dialogs.tsx';
 import type { PdfDoc } from '../lib/pdfjs.ts';
 import { detectLines, measureLook } from './rasterGrid.ts';
 import { track, useEditor, type SetupDraft } from './store.ts';
@@ -196,9 +197,16 @@ export function TableSetupView({ draft, model, vp, zoom, pdf }: { draft: SetupDr
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const { mesh: m, vsel: v, junctions: js } = latest.current;
-      if (!m || !v || (e.target instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(e.target.tagName))) return;
+      const inInput = e.target instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(e.target.tagName);
+      // Esc drops the vertex selection, else leaves the setup (also from a Step 1 field).
+      if (e.key === 'Escape' && !modalOpen() && !(inInput && m)) {
+        e.stopPropagation();
+        if (v) setVsel(null);
+        else useEditor.getState().startSetup(null);
+        return;
+      }
+      if (!m || !v || inInput) return;
       const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key] as [number, number] | undefined;
-      if (e.key === 'Escape') return setVsel(null);
       if (!arrow) return;
       e.preventDefault();
       e.stopPropagation();

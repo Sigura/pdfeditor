@@ -1,9 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFNumber, type PDFObject, PDFRawStream, type PDFRef, PDFTextField, decodePDFRawStream } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFNumber, type PDFObject, type PDFPage, PDFRawStream, type PDFRef, PDFTextField, decodePDFRawStream } from 'pdf-lib';
 import { arrangePdf, mergePdfs } from '../src/merge.ts';
 import { addInternalLink, encryptRc4, makePdf } from './helpers.ts';
 
+/** /PageLabels as [start, style, prefix, first number] per range. */
+const labelRanges = (doc: PDFDocument) => {
+  const nums = doc.catalog.lookup(PDFName.of('PageLabels'), PDFDict).lookup(PDFName.of('Nums'), PDFArray);
+  const out: unknown[] = [];
+  for (let i = 0; i < nums.size(); i += 2) {
+    const d = nums.lookup(i + 1, PDFDict);
+    const p = d.lookup(PDFName.of('P'));
+    out.push([nums.lookup(i, PDFNumber).asNumber(), d.lookup(PDFName.of('S'))?.toString().slice(1), p instanceof PDFHexString ? p.decodeText() : undefined, d.lookupMaybe(PDFName.of('St'), PDFNumber)?.asNumber() ?? 1]);
+  }
+  return out;
+};
+
 describe('mergePdfs', () => {
+  it('carries page labels over; pages of files without labels and blanks are numbered by position', async () => {
+    const a = await makePdf(3, 'A');
+    a.catalog.set(PDFName.of('PageLabels'), a.context.obj({ Nums: [0, { S: 'r' }] }));
+    const b = await makePdf(2, 'B');
+    const out = await PDFDocument.load(await mergePdfs([{ file: await a.save() , pages: '2-3' }, { blank: true }, { file: await b.save() }]));
+    expect(labelRanges(out)).toEqual([[0, 'r', undefined, 2], [2, 'D', undefined, 3]]);
+    const plain = await PDFDocument.load(await mergePdfs([{ file: await b.save() }]));
+    expect(plain.catalog.has(PDFName.of('PageLabels'))).toBe(false);
+  });
+
   it('concatenates ranges keeping size, rotation and file bookmarks', async () => {
     const a = await makePdf(3, 'A', { size: [300, 400] });
     const b = await makePdf(5, 'B', { size: [500, 200], rotate: 90 });
@@ -98,6 +120,35 @@ describe('mergePdfs', () => {
 });
 
 describe('arrangePdf', () => {
+  it('keeps each page its label when pages move or go', async () => {
+    const doc = await makePdf(4, 'A');
+    const ctx = doc.context;
+    doc.catalog.set(PDFName.of('PageLabels'), ctx.obj({ Nums: [0, { S: 'r' }, 2, { S: 'D', P: PDFHexString.fromText('A-') }] }));
+    const out = await PDFDocument.load(await arrangePdf(await doc.save({ useObjectStreams: false }), [{ page: 2 }, { page: 0 }, { page: 1 }, { page: 3 }]));
+    expect(labelRanges(out)).toEqual([[0, 'D', 'A-', 1], [1, 'r', undefined, 1], [3, 'D', 'A-', 2]]);
+  });
+
+  it('removes links to removed pages from the pages it keeps', async () => {
+    const doc = await makePdf(3, 'A');
+    const [p0, p1, p2] = doc.getPages() as [PDFPage, PDFPage, PDFPage];
+    addInternalLink(doc, p0, p1);
+    addInternalLink(doc, p0, p2);
+    const ctx = doc.context;
+    p2.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 9, 9], A: { S: 'GoTo', D: PDFHexString.fromText('mid') } })));
+    p2.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 9, 9], A: { S: 'URI', URI: PDFHexString.fromText('https://example.com') } })));
+    doc.catalog.set(PDFName.of('Names'), ctx.obj({ Dests: { Names: [PDFHexString.fromText('mid'), [p1.ref, 'Fit']] } }));
+
+    const out = await PDFDocument.load(await arrangePdf(await doc.save({ useObjectStreams: false }), [{ page: 2 }, { page: 0 }]));
+    const targets = (k: number) =>
+      out.getPage(k).node.Annots()!.asArray().map((r) => {
+        const annot = out.context.lookup(r, PDFDict);
+        const dest = annot.lookupMaybe(PDFName.of('Dest'), PDFArray);
+        return dest ? out.getPages().findIndex((p) => p.ref === dest.get(0)) : annot.lookup(PDFName.of('A'), PDFDict).lookup(PDFName.of('S'))!.toString();
+      });
+    expect(targets(1)).toEqual([0]);
+    expect(targets(0)).toEqual(['/URI']);
+  });
+
   it('unlinks outline items that point to removed pages, keeping their children and the open state', async () => {
     const doc = await makePdf(4, 'A');
     const ctx = doc.context;

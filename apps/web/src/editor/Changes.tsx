@@ -43,7 +43,41 @@ const clip = (s: string, n = 28) => {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 
-function describe(op: EditOperation, name: string, before: EditOperation[]): string {
+type Arrange = Extract<EditOperation, { type: 'arrangePages' }>;
+
+/** Names a page-list change by comparing it with the arrangement before it; page numbers are display positions. */
+function describeArrange(op: Arrange, prev: Arrange | undefined, pageCount: number): string {
+  const before: Arrange['order'] = prev?.order ?? Array.from({ length: pageCount }, (_, page) => ({ page }));
+  const added = op.blanks.length - (prev?.blanks.length ?? 0);
+  const at = (list: { page: number }[], page: number) => list.findIndex((e) => e.page === page) + 1;
+  const pages = (list: { page: number }[]) => list.map((e) => e.page);
+  if (added === 1 && op.order.length === before.length + 1) {
+    const blank = op.blanks.at(-1)!;
+    const page = pageCount + op.blanks.length - 1;
+    if ('copy' in blank) return `Duplicate page ${at(op.order, blank.copy)}`;
+    return at(op.order, page) === 1 ? 'Insert a blank page first' : `Insert a blank page after page ${at(op.order, page) - 1}`;
+  }
+  if (added !== 0) return `Arrange pages (${op.order.length} pages)`;
+  if (op.order.length === before.length - 1) {
+    const gone = before.find((e) => at(op.order, e.page) === 0);
+    if (gone && pages(before).filter((k) => k !== gone.page).join() === pages(op.order).join()) return `Delete page ${at(before, gone.page)}`;
+  }
+  if (op.order.length === before.length) {
+    if (pages(before).join() === pages(op.order).join()) {
+      const turned = op.order.filter((e, i) => (e.rotate ?? 0) !== (before[i]!.rotate ?? 0));
+      if (turned.length === 1) return `Rotate page ${at(op.order, turned[0]!.page)} to ${turned[0]!.rotate ?? 0}°`;
+    } else {
+      const moved = before.find((e) => {
+        const rest = (list: { page: number }[]) => pages(list).filter((k) => k !== e.page).join();
+        return rest(before) === rest(op.order);
+      });
+      if (moved) return `Move page ${at(before, moved.page)} to position ${at(op.order, moved.page)}`;
+    }
+  }
+  return `Arrange pages (${op.order.length} pages)`;
+}
+
+function describe(op: EditOperation, name: string, before: EditOperation[], pageCount: number): string {
   switch (op.type) {
     case 'replaceText':
       return `Edit text → “${clip(op.text)}”`;
@@ -78,12 +112,8 @@ function describe(op: EditOperation, name: string, before: EditOperation[]): str
       return `Scan layout of page ${op.pageIndex + 1} (${op.lines.length} lines)`;
     case 'deskewPage':
       return `Straighten page by ${op.angle.toFixed(2)}°`;
-    case 'arrangePages': {
-      const prev = before.findLast((o) => o.type === 'arrangePages');
-      const added = op.blanks.at(-1);
-      if (added && 'copy' in added && op.blanks.length === (prev?.blanks.length ?? 0) + 1) return `Duplicate page ${op.order.findIndex((e) => e.page === added.copy) + 1}`;
-      return `Arrange pages (${op.order.length} pages)`;
-    }
+    case 'arrangePages':
+      return describeArrange(op, before.findLast((o) => o.type === 'arrangePages'), pageCount);
     case 'resizeTable':
       return `Resize table ${op.colWidths ? 'columns' : ''}${op.colWidths && op.rowHeights ? ' and ' : ''}${op.rowHeights ? 'rows' : ''}`;
   }
@@ -140,7 +170,7 @@ export function ChangesList() {
                 }}
               >
                 <span className="mr-1 text-slate-400 tabular-nums">{i + 1}.</span>
-                {describe(op, nameOf(target), ops.slice(0, i))}
+                {describe(op, nameOf(target), ops.slice(0, i), origPages.length)}
                 {page !== undefined && pageNo({ ops, pages }, page) > 0 && <span className="ml-1 text-slate-400">p{pageNo({ ops, pages }, page)}</span>}
               </button>
               <button

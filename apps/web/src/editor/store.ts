@@ -1,7 +1,10 @@
 import { create } from 'zustand';
-import { displayOrder, type ArrangePages, type CellSpan, type EditOperation, type EditResult, type PageModel, type PageOverflow, type Point, type Rect, type Ruling, type StrategyReport, type TableSetup } from '@pdf-toolkit/shared';
-import { postEdits } from '../lib/api.ts';
+import { displayOrder, type ArrangePages, type DocumentInfo, type CellSpan, type EditOperation, type EditResult, type PageModel, type PageOverflow, type Point, type Rect, type Ruling, type StrategyReport, type TableSetup } from '@pdf-toolkit/shared';
+import { apiError, postEdits } from '../lib/api.ts';
+import { track } from '../lib/progress.tsx';
 import { measureScanLayouts, moveOp } from './background.ts';
+
+export { track };
 
 export type Tool = 'select' | 'addText' | 'table';
 /**
@@ -32,20 +35,6 @@ export type Prompt =
   | { kind: 'newPage'; pageIndex: number; by: number; count: number; pageNumber?: string; tableIds: string[] }
   | { kind: 'continuation'; pageIndex: number; tableIds: string[] }
   | { kind: 'colFit'; by: number; op: Extract<EditOperation, { type: 'tableInsertCol' }> };
-export type Activity = { id: number; label: string; since: number };
-let activityId = 0;
-
-/** Runs `fn` as a named activity, so a long wait shows progress. */
-export async function track<T>(label: string, fn: (step: (label: string) => void) => Promise<T>): Promise<T> {
-  const st = useEditor.getState();
-  const id = st.begin(label);
-  try {
-    return await fn((l) => useEditor.getState().progress(id, l));
-  } finally {
-    useEditor.getState().end(id);
-  }
-}
-
 /** Arrow-key moves not yet sent, in PDF user space. */
 export const arrangement = (ops: EditOperation[]): ArrangePages | undefined => ops.findLast((op) => op.type === 'arrangePages');
 
@@ -88,10 +77,6 @@ export type EditorState = {
   prompt: Prompt | null;
   busy: boolean;
   /** Running operations, oldest first; the editor shows the latest once it has run 1.5 s. */
-  activities: Activity[];
-  begin: (label: string) => number;
-  progress: (id: number, label: string) => void;
-  end: (id: number) => void;
   error: string | null;
   showChanges: boolean;
   tool: Tool;
@@ -102,6 +87,8 @@ export type EditorState = {
   tableSetup: SetupDraft | null;
   /** Bumped after each page render, so pixel-based colour detection re-reads the canvas. */
   renderCount: number;
+  /** Page labels of the shown PDF by page index (/PageLabels), null when it has none. */
+  pageLabels: string[] | null;
   /** A file handed over from another tab (Merge's "Edit result"), opened by the editor when it mounts. */
   incoming: File | null;
   setIncoming: (f: File | null) => void;
@@ -162,7 +149,6 @@ const initial = {
   overflows: [] as PageOverflow[],
   continuations: [] as EditResult['continuations'],
   prompt: null as Prompt | null,
-  activities: [] as Activity[],
   busy: false,
   error: null,
   showChanges: false,
@@ -173,6 +159,7 @@ const initial = {
   nudge: null,
   tableSetup: null,
   renderCount: 0,
+  pageLabels: null as string[] | null,
   incoming: null as File | null,
 };
 
@@ -381,16 +368,47 @@ export const useEditor = create<EditorState>((set, get) => ({
     nudgeTimer = setTimeout(flush, 400);
   },
   rendered: () => set((s) => ({ renderCount: s.renderCount + 1 })),
-  begin: (label) => {
-    const id = ++activityId;
-    set((s) => ({ activities: [...s.activities, { id, label, since: Date.now() }] }));
-    return id;
-  },
-  progress: (id, label) => set((s) => ({ activities: s.activities.map((a) => (a.id === id ? { ...a, label } : a)) })),
-  end: (id) => set((s) => ({ activities: s.activities.filter((a) => a.id !== id) })),
 }));
 
-// The document lives on the server only for the session's TTL and the page keeps no handle to it.
+const SAVED = 'pdf-toolkit:document';
+type Saved = { docId: string; downloadedRevision: number };
+
+/** The document open before a reload of this tab, if any (the server keeps it for the TTL after its last use). */
+export const savedDocument = (): Saved | null => JSON.parse(sessionStorage.getItem(SAVED) ?? 'null') as Saved | null;
+
+useEditor.subscribe((s, prev) => {
+  if (s.docId === prev.docId && s.downloadedRevision === prev.downloadedRevision) return;
+  if (s.docId) sessionStorage.setItem(SAVED, JSON.stringify({ docId: s.docId, downloadedRevision: s.downloadedRevision } satisfies Saved));
+  else sessionStorage.removeItem(SAVED);
+});
+
+let resuming: Promise<void> | undefined;
+/** Opens the document of `savedDocument()` again, with its changes; forgets it when the server no longer has it. Runs once per page load. */
+export const resumeDocument = () => (resuming ??= resume());
+
+async function resume(): Promise<void> {
+  const saved = savedDocument();
+  if (!saved || useEditor.getState().docId) return;
+  const st = useEditor.getState();
+  st.setBusy(true);
+  try {
+    const res = await track('Reopening the document…', () => fetch(`/api/documents/${saved.docId}?originalPages=1`));
+    if (!res.ok) {
+      sessionStorage.removeItem(SAVED);
+      throw await apiError(res);
+    }
+    // A file opened meanwhile wins.
+    if (useEditor.getState().docId) return;
+    const d = (await res.json()) as DocumentInfo & { revision: number; ops: EditOperation[]; reports: StrategyReport[]; warnings: string[]; origPages: PageModel[] };
+    useEditor.setState({ ...initial, docId: d.docId, fileName: d.fileName, pages: d.pages, origPages: d.origPages, revision: d.revision, ops: d.ops, reports: d.reports, warnings: d.warnings, downloadedRevision: saved.downloadedRevision });
+  } catch (e) {
+    useEditor.getState().setError(`The document open before the reload couldn't be reopened: ${(e as Error).message}`);
+  } finally {
+    useEditor.getState().setBusy(false);
+  }
+}
+
+// Closing the tab drops the handle to the document, and a reload only finds it while the server keeps it.
 window.addEventListener('beforeunload', (e) => {
   const s = useEditor.getState();
   if (!hasUnsaved(s)) return;

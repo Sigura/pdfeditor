@@ -91,7 +91,7 @@ export function StraightenBar({ model }: { model: PageModel }) {
       {straight === k && <span data-testid="straighten-none">already straight</span>}
       {current && (
         <>
-          <button className={btn} disabled={blocked || st.busy} title="Rotate 0.1° clockwise" onClick={() => void apply(angle - 0.1)}>
+          <button className={btn} disabled={blocked || st.busy} title="Rotate 0.1° clockwise" aria-label="Rotate 0.1° clockwise" onClick={() => void apply(angle - 0.1)}>
             −
           </button>
           <input
@@ -110,7 +110,7 @@ export function StraightenBar({ model }: { model: PageModel }) {
             }}
           />
           °
-          <button className={btn} disabled={blocked || st.busy} title="Rotate 0.1° counter-clockwise" onClick={() => void apply(angle + 0.1)}>
+          <button className={btn} disabled={blocked || st.busy} title="Rotate 0.1° counter-clockwise" aria-label="Rotate 0.1° counter-clockwise" onClick={() => void apply(angle + 0.1)}>
             +
           </button>
           <button className={btn} disabled={blocked || st.busy || angle === 0} title="Show the page as scanned" onClick={() => void apply(0)}>

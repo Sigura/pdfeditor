@@ -12,7 +12,7 @@ export const MIN_CELL = 4;
 export const minCellSize = (table: Table, axis: 'row' | 'col', i: number) =>
   Math.max(MIN_CELL, ...table.cells.filter((c) => c.minSize && (axis === 'row' ? c.row === i && (c.rowSpan ?? 1) === 1 : c.col === i && (c.colSpan ?? 1) === 1)).map((c) => (axis === 'row' ? c.minSize!.height : c.minSize!.width)));
 
-function NumField({ label, value, onCommit, step = 0.5, min, testId }: { label: string; value: number; onCommit?: (v: number) => void; step?: number; min?: number; testId?: string }) {
+function NumField({ label, name, title, value, onCommit, step = 0.5, min, testId }: { label: string; name?: string; title?: string; value: number; onCommit?: (v: number) => void; step?: number; min?: number; testId?: string }) {
   const shown = Number(value.toFixed(2));
   const [text, setText] = useState(String(shown));
   const [rejected, setRejected] = useState<string>();
@@ -38,8 +38,9 @@ function NumField({ label, value, onCommit, step = 0.5, min, testId }: { label: 
         type="number"
         step={step}
         disabled={!onCommit}
-        title={min !== undefined ? `min ${min.toFixed(1)} pt` : undefined}
+        title={title ?? (min !== undefined ? `min ${min.toFixed(1)} pt` : undefined)}
         aria-invalid={rejected ? true : undefined}
+        aria-label={name}
         data-testid={testId}
         className={`w-full min-w-0 rounded border px-1 py-0.5 tabular-nums disabled:bg-slate-50 disabled:text-slate-500 ${rejected ? 'border-red-500 ring-2 ring-red-300' : 'border-slate-300'}`}
         value={text}
@@ -48,7 +49,16 @@ function NumField({ label, value, onCommit, step = 0.5, min, testId }: { label: 
           setRejected(undefined);
         }}
         onBlur={commit}
-        onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          else if (e.key === 'Escape') {
+            setText(String(shown));
+            setRejected(undefined);
+            const input = e.currentTarget;
+            // Blur after the reset has rendered, so the commit sees the old value.
+            requestAnimationFrame(() => input.blur());
+          }
+        }}
       />
       {rejected && (
         <span role="status" data-testid="numfield-rejected" className="absolute top-full left-5 z-10 mt-0.5 rounded bg-red-600 px-1 text-[10px] whitespace-nowrap text-white">
@@ -120,7 +130,7 @@ function BoxInspector({ box }: { box: TextBox }) {
           <NumField label="X" value={x0} testId="insp-x" onCommit={busy ? undefined : (v) => move(v - x0, 0)} />
           <NumField label="Y" value={y1} testId="insp-y" onCommit={busy ? undefined : (v) => move(0, v - y1)} />
           <NumField label="W" value={x1 - x0} min={5} testId="insp-w" onCommit={busy ? undefined : (v) => void edit([{ type: 'moveElement', elementId: box.id, dx: 0, dy: 0, width: v }])} />
-          <NumField label="H" value={y1 - y0} />
+          <NumField label="H" value={y1 - y0} title="Follows from the text and the width" />
         </div>
       </div>
       <div className="space-y-1">
@@ -148,6 +158,7 @@ function BoxInspector({ box }: { box: TextBox }) {
             disabled={busy || !fill}
             data-testid="insp-fill-color"
             title="Fill colour"
+            aria-label="Fill colour"
             className="h-6 w-8 cursor-pointer rounded border border-slate-300 disabled:cursor-default disabled:opacity-40"
             onChange={(e) => restyle({ background: fromHex(e.target.value) })}
           />
@@ -158,16 +169,16 @@ function BoxInspector({ box }: { box: TextBox }) {
         <div className="space-y-2">
           <div className="text-[11px] font-medium tracking-wide text-slate-500 uppercase">Text</div>
           <div className="flex items-center gap-2">
-            <input type="color" value={toHex(color)} disabled={busy} data-testid="insp-color" className="h-7 w-9 cursor-pointer rounded border border-slate-300" onChange={(e) => restyle({ color: fromHex(e.target.value) })} />
+            <input type="color" value={toHex(color)} disabled={busy} data-testid="insp-color" aria-label="Text colour" title="Text colour" className="h-7 w-9 cursor-pointer rounded border border-slate-300" onChange={(e) => restyle({ color: fromHex(e.target.value) })} />
             <div className="flex rounded border border-slate-300" data-testid="insp-align">
               {(['left', 'center', 'right', 'justify'] as const).map((a) => (
-                <button key={a} disabled={busy} title={`Align ${a}`} className={`px-1.5 py-0.5 ${align === a ? 'bg-sky-600 text-white' : 'hover:bg-slate-100'}`} onClick={() => align !== a && restyle({ align: a })}>
+                <button key={a} disabled={busy} title={`Align ${a}`} aria-label={`Align ${a}`} aria-pressed={align === a} className={`px-1.5 py-0.5 ${align === a ? 'bg-sky-600 text-white' : 'hover:bg-slate-100'}`} onClick={() => align !== a && restyle({ align: a })}>
                   {{ left: '⇤', center: '↔', right: '⇥', justify: '☰' }[a]}
                 </button>
               ))}
             </div>
           </div>
-          <NumField label="↕" value={spacing} step={0.1} min={0.5} testId="insp-spacing" onCommit={busy ? undefined : (v) => restyle({ lineSpacing: Math.min(5, v) })} />
+          <NumField label="↕" name="Line spacing" value={spacing} step={0.1} min={0.5} testId="insp-spacing" onCommit={busy ? undefined : (v) => restyle({ lineSpacing: Math.min(5, v) })} />
           <p className="text-[11px] text-slate-500">↕ line spacing, × font size</p>
           <button className="w-full rounded border border-slate-300 px-2 py-1 hover:bg-slate-100" onClick={() => startEditing(box.id)}>
             Edit text…

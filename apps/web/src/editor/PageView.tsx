@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import type { Color, PageModel, Rect, StrategyReport, TextBox } from '@pdf-toolkit/shared';
 import { modalOpen } from '../lib/Dialogs.tsx';
 import type { PdfDoc } from '../lib/pdfjs.ts';
+import { beginActivity, endActivity } from '../lib/progress.tsx';
 import { opTarget } from './Changes.tsx';
 import { fillAt, moveOp, registerCanvas } from './background.ts';
 import { GuideLines, Readout, snapEdges, snapRect, snapTargets, type Guides } from './snap.tsx';
@@ -355,7 +356,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   useEffect(() => {
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
-    const activity = useEditor.getState().begin(`Rendering page ${model.pageIndex + 1}…`);
+    const activity = beginActivity(`Rendering page ${model.pageIndex + 1}…`);
     void (async () => {
       const page = await pdf.getPage(model.pageIndex + 1);
       if (cancelled) return;
@@ -388,7 +389,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
       .catch((e: unknown) => {
         if (!cancelled) useEditor.getState().setError(`Page ${model.pageIndex + 1} could not be shown: ${(e as Error).message ?? e}`);
       })
-      .finally(() => useEditor.getState().end(activity));
+      .finally(() => endActivity(activity));
     return () => {
       cancelled = true;
       task?.cancel();
@@ -454,6 +455,11 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
                 key={b.id}
                 data-testid="text-box"
                 data-box-id={b.id}
+                role="button"
+                tabIndex={tool === 'select' ? 0 : -1}
+                aria-label={`Text box: ${b.text.replace(/\s+/g, ' ').slice(0, 80)}`}
+                // Tab selects the box; a mouse focus doesn't, or the click that follows would start editing.
+                onFocus={(e) => tool === 'select' && !selected && e.currentTarget.matches(':focus-visible') && select(b.id)}
                 title={`${b.runs[0] ? `${b.runs[0].fontName} ${b.runs[0].fontSize.toFixed(1)}pt` : 'Added text'}${editable ? (selected ? ' — drag to move, click to edit, Delete to remove' : ' — click to select') : ' — text cannot be decoded, not editable'}`}
                 onMouseEnter={() => hover(b.id)}
                 onMouseLeave={() => hover(null)}

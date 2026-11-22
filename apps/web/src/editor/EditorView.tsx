@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentInfo, EditOperation } from '@pdf-toolkit/shared';
 import { apiError, downloadBlob } from '../lib/api.ts';
-import { askConfirm, askPassword, modalOpen } from '../lib/Dialogs.tsx';
+import { askConfirm, askPassword, modalOpen, useModalFocus } from '../lib/Dialogs.tsx';
 import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
 import { opPage } from './Changes.tsx';
+import { FindBar } from './Find.tsx';
 import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
-import { arrangement, hasUnsaved, pageNo, pageOrder, track, useEditor } from './store.ts';
+import { arrangement, hasUnsaved, pageNo, pageOrder, resumeDocument, track, useEditor } from './store.ts';
 import { StraightenBar, TiltBanner } from './Deskew.tsx';
 
 /** `content` identifies what the page shows: the thumbnail is rendered again only when it changes. */
-function Thumb({ pdf, index, no, rotate, content, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; content: string; active: boolean; changes: number; onClick: () => void }) {
+function Thumb({ pdf, index, no, label, rotate, content, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; label?: string; rotate: number; content: string; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
   const shownContent = useRef<string>(undefined);
   const url = useRef<string>(undefined);
@@ -44,7 +45,10 @@ function Thumb({ pdf, index, no, rotate, content, active, changes, onClick }: { 
       ) : (
         <div className="h-36 animate-pulse bg-slate-200" />
       )}
-      <div className="mt-1 text-center text-xs text-slate-600">{no}</div>
+      <div className="mt-1 text-center text-xs text-slate-600" data-testid="thumb-no">
+        {no}
+        {label && label !== String(no) && <span className="text-slate-400" title="Page label"> · {label}</span>}
+      </div>
       {changes > 0 && (
         <span data-testid="thumb-changes" title={`${changes} change${changes > 1 ? 's' : ''} on this page`} className="absolute top-0 right-0 min-w-4 rounded-full bg-amber-500 px-1 text-[10px] leading-4 text-white">
           {changes}
@@ -75,7 +79,7 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
   const commit = (pages: { page: number; rotate: number }[], blanks = arr?.blanks ?? []) =>
     st.edit([{ type: 'arrangePages', order: pages.map(({ page, rotate }) => (rotate ? { page, rotate: rotate as 0 | 90 | 180 | 270 } : { page })), blanks }]);
   const entries = () => shown.map((k) => ({ page: k, rotate: rotation(k) }));
-  const rotate = (k: number) => commit(entries().map((e) => (e.page === k ? { ...e, rotate: (e.rotate + 90) % 360 } : e)));
+  const rotate = (k: number, by = 90) => commit(entries().map((e) => (e.page === k ? { ...e, rotate: (((e.rotate + by) % 360) + 360) % 360 } : e)));
   const remove = (k: number) => commit(entries().filter((e) => e.page !== k));
   const insertBlank = (k: number) => {
     const m = st.pages[k]!;
@@ -128,10 +132,22 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
               setDragOver(k);
             }}
             onKeyDown={(e) => {
-              const step = own && e.altKey && !st.busy ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : undefined;
-              if (!step) return;
-              e.preventDefault();
-              void moveBy(k, step);
+              if (!own || st.busy || e.ctrlKey || e.metaKey) return;
+              const step = e.altKey ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : undefined;
+              if (step) {
+                e.preventDefault();
+                void moveBy(k, step);
+              } else if (e.key.toLowerCase() === 'r' && !e.altKey) {
+                e.preventDefault();
+                e.stopPropagation();
+                void rotate(k, e.shiftKey ? -90 : 90);
+              } else if (e.key === 'Delete' && !e.altKey && shown.length > 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                const at = shown.indexOf(k);
+                const next = shown[at + 1] ?? shown[at - 1];
+                void remove(k).then(() => document.querySelector<HTMLElement>(`[data-testid="page-thumb"][data-page="${next}"] > button`)?.focus());
+              }
             }}
             onDragLeave={() => setDragOver(null)}
             onDrop={(e) => {
@@ -142,10 +158,10 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
               move(Number(e.dataTransfer.getData(PAGE_DRAG)), k);
             }}
           >
-            <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} content={contentKeys.current[k] ?? ''} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
+            <Thumb pdf={pdf} index={k} no={i + 1} label={st.pageLabels?.[k]} rotate={rotation(k)} content={contentKeys.current[k] ?? ''} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
             {own && (
               <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-focus-within:flex group-hover:flex">
-                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise" aria-label="Rotate page" onClick={() => rotate(k)}>
+                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise (Shift+click or Shift+R: counter-clockwise)" aria-label="Rotate page" onClick={(e) => void rotate(k, e.shiftKey ? -90 : 90)}>
                   ↻
                 </button>
                 <button data-testid="thumb-blank" className={tool} disabled={st.busy} title="Insert a blank page after this one" aria-label="Insert blank page after" onClick={() => insertBlank(k)}>
@@ -176,6 +192,8 @@ function PromptDialog() {
   const { prompt, setPrompt, revert, edit, busy, ops, pages } = useEditor();
   const [repeat, setRepeat] = useState(true);
   const [numbers, setNumbers] = useState<'keep' | 'omit'>('omit');
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(ref, prompt);
   useEffect(() => {
     setRepeat(true);
     setNumbers('omit');
@@ -214,8 +232,10 @@ function PromptDialog() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" data-testid="prompt">
       <div
+        ref={ref}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="prompt-text"
         className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl"
         onKeyDown={(e) => {
           if (e.key !== 'Escape' || busy) return;
@@ -223,7 +243,7 @@ function PromptDialog() {
           choices.find((c) => c.testId === 'prompt-cancel')?.run();
         }}
       >
-        <p className="mb-3">{text}</p>
+        <p id="prompt-text" className="mb-3">{text}</p>
         {prompt.kind === 'newPage' && prompt.tableIds.length > 0 && (
           <div className="mb-2">
             <div className="mb-1">Repeat header rows on the continued part?</div>
@@ -291,6 +311,11 @@ function PageJump() {
         }}
       />
       <span className="tabular-nums" data-testid="page-count">/ {order.length}</span>
+      {st.pageLabels?.[st.pageIndex] && st.pageLabels[st.pageIndex] !== String(current) && (
+        <span data-testid="page-label" className="text-xs text-slate-400" title="Page label">
+          ({st.pageLabels[st.pageIndex]})
+        </span>
+      )}
       {invalid && <span role="status" className="text-xs text-red-600">pages 1–{order.length}</span>}
     </label>
   );
@@ -301,15 +326,17 @@ const SHORTCUTS: [string, string][] = [
   ['PageDown / PageUp', 'Scroll the page, then go to the next / previous page'],
   ['Home / End', 'First / last page'],
   ['Alt + ↑ / ↓', 'Move the focused thumbnail’s page up / down'],
+  ['R / Shift + R, Delete', 'Rotate the focused thumbnail’s page clockwise / back; delete it'],
   ['Ctrl + wheel, Ctrl + = / −', 'Zoom in / out'],
   ['Ctrl + 0', 'Fit page width'],
   ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
   ['Ctrl + S', 'Download'],
+  ['Ctrl + F', 'Find and replace in text boxes and table cells (Enter: next, Shift + Enter: previous)'],
   ['Enter', 'Edit the selected box or cell'],
   ['Arrows (Shift: 10 pt)', 'Move the selection by 1 pt; in a table, go to the next cell'],
-  ['Tab / Shift + Tab', 'Next / previous table cell'],
+  ['Tab / Shift + Tab', 'Next / previous text box or table handle (selects it); in a selected table cell, the next / previous cell'],
   ['Delete', 'Remove the selected box or table; clear the selected cell'],
-  ['Esc', 'Deselect; close this list'],
+  ['Esc', 'Deselect; back to the Select tool; leave the table setup; close this list'],
   ['Alt while dragging', 'Turn snapping off'],
   ['Violet handle', 'Click to select a whole table (arrows nudge it), drag to move it'],
   ['Ctrl + Enter / Esc', 'Apply / cancel text editing'],
@@ -317,12 +344,14 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(ref, true);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" data-testid="shortcuts" className="w-[30rem] rounded-lg bg-white p-4 text-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div ref={ref} role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" data-testid="shortcuts" className="w-[30rem] rounded-lg bg-white p-4 text-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center">
           <h2 id="shortcuts-title" className="flex-1 font-semibold">Keyboard shortcuts</h2>
-          <button aria-label="Close" className="rounded px-2 hover:bg-slate-100" onClick={onClose}>
+          <button aria-label="Close" autoFocus className="rounded px-2 hover:bg-slate-100" onClick={onClose}>
             ×
           </button>
         </div>
@@ -344,30 +373,8 @@ const ZOOM_STEP = 1.2;
 const isGridLocked = (ops: EditOperation[]) => ops.some((o) => ['moveElement', 'tableInsertRow', 'tableDeleteRow', 'tableInsertCol', 'tableDeleteCol', 'resizeTable'].includes(o.type));
 const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || !!t.closest('[aria-modal]'));
 
-const PROGRESS_AFTER_MS = 1500;
-
-/** The latest running activity, once something has run for 1.5 s, with the elapsed time. */
-function ProgressBanner() {
-  const activities = useEditor((s) => s.activities);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!activities.length) return;
-    const t = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(t);
-  }, [activities.length]);
-  const oldest = activities[0];
-  if (!oldest || now - oldest.since < PROGRESS_AFTER_MS) return null;
-  const latest = activities.at(-1)!;
-  return (
-    <div data-testid="progress" role="status" className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
-      <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-      <span>{latest.label}</span>
-      <span className="tabular-nums text-white/60">{((now - oldest.since) / 1000).toFixed(1)} s</span>
-    </div>
-  );
-}
-
-export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
+/** `onArrange` hands files to Merge & Pages and switches there. */
+export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }) {
   const st = useEditor();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
   const [pdfRevision, setPdfRevision] = useState(-1);
@@ -375,6 +382,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
   const sectionRef = useRef<HTMLElement>(null);
   const [dropActive, setDropActive] = useState(false);
   const [help, setHelp] = useState(false);
+  const [find, setFind] = useState(false);
 
   const shown = useRef<PdfDoc | null>(null);
   useEffect(() => {
@@ -394,6 +402,8 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       shown.current = loaded;
       setPdf(loaded);
       setPdfRevision(revision);
+      const pageLabels = await loaded.getPageLabels();
+      if (alive) useEditor.setState({ pageLabels });
       if (old) void old.destroy();
     })().catch((e: Error) => useEditor.getState().setError(e.message));
     return () => {
@@ -466,6 +476,8 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
     if (!downloading) void download(downloadBlob, true);
   };
 
+  useEffect(() => void resumeDocument(), []);
+
   useEffect(() => {
     // Read from the store, not the render: StrictMode runs the effect twice with the same render.
     const f = useEditor.getState().incoming;
@@ -489,6 +501,12 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       if (!s.docId || s.prompt) return;
       if (modalOpen()) {
         if (e.key === 'Escape' || e.key === '?') setHelp(false);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !(e.target instanceof HTMLElement && e.target.isContentEditable)) {
+        e.preventDefault();
+        setFind(true);
+        document.querySelector<HTMLInputElement>('[data-testid=find-input]')?.select();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -526,6 +544,8 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
         s.setPage(order[e.key === 'Home' ? 0 : last]!);
       } else if (e.key === '?') {
         setHelp(true);
+      } else if (e.key === 'Escape') {
+        if (s.tool !== 'select' && !s.tableSetup && !s.selectedId && !s.cell) s.setTool('select');
       } else if (!s.tableSetup && !s.editingId && !s.editingCell) {
         const tool = ({ v: 'select', t: 'addText', b: 'table' } as const)[e.key.toLowerCase() as 'v' | 't' | 'b'];
         if (!tool || (tool === 'table' && isGridLocked(s.ops))) return;
@@ -564,8 +584,10 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       onDrop={(e) => {
         e.preventDefault();
         setDropActive(false);
-        const f = e.dataTransfer.files[0];
-        if (f) void open(f);
+        const list = Array.from(e.dataTransfer.files);
+        if (list.length > 1) {
+          void askConfirm(`${list.length} files dropped; the editor opens one at a time. Combine them in Merge & Pages instead?`, 'Open in Merge & Pages').then((yes) => yes && onArrange(list));
+        } else if (list[0]) void open(list[0]);
       }}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-sm">
@@ -589,9 +611,9 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
             <span className="max-w-xs truncate font-medium">{st.fileName}</span>
             {hasUnsaved(st) && <span data-testid="unsaved" title="Changes not downloaded yet" aria-label="Changes not downloaded yet" className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />}
             <div className="ml-4 flex items-center gap-1">
-              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / ZOOM_STEP)} title="Zoom out (Ctrl + −)">−</button>
-              <span className="w-12 text-center tabular-nums">{Math.round(st.zoom * 100)}%</span>
-              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * ZOOM_STEP)} title="Zoom in (Ctrl + =)">+</button>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / ZOOM_STEP)} title="Zoom out (Ctrl + −)" aria-label="Zoom out">−</button>
+              <span className="w-12 text-center tabular-nums" aria-label={`Zoom ${Math.round(st.zoom * 100)}%`}>{Math.round(st.zoom * 100)}%</span>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * ZOOM_STEP)} title="Zoom in (Ctrl + =)" aria-label="Zoom in">+</button>
               <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={fitWidth} title="Fit page width (Ctrl + 0)" data-testid="fit-width">
                 Fit
               </button>
@@ -609,6 +631,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
                   key={t}
                   title={t === 'table' && gridLocked ? 'Tables are set up on the original layout: undo moves and row/column changes first' : title}
                   disabled={t === 'table' && gridLocked}
+                  aria-pressed={st.tool === t}
                   className={`rounded px-2 py-1 disabled:opacity-40 ${st.tool === t ? 'bg-sky-600 text-white' : 'hover:bg-slate-100'}`}
                   onClick={() => st.setTool(t)}
                 >
@@ -618,10 +641,10 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
               {st.tool === 'addText' && pdf && <FontPicker pdf={pdf} pages={st.pages} revision={st.revision} />}
             </div>
             <div className="ml-2 flex items-center gap-1">
-              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl + Z)">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl + Z)" aria-label="Undo">
                 ↶
               </button>
-              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl + Shift + Z)">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl + Shift + Z)" aria-label="Redo">
                 ↷
               </button>
             </div>
@@ -630,7 +653,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
               className="ml-auto rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40"
               title="Combine with other PDFs: opens a copy of the edited PDF in Merge & Pages, where these edits can no longer be undone. To reorder, rotate, delete or add pages with undo, use the tools on the page thumbnails."
               disabled={downloading}
-              onClick={() => void download((b, name) => onArrange(new File([b], name, { type: 'application/pdf' })), false)}
+              onClick={() => void download((b, name) => onArrange([new File([b], name, { type: 'application/pdf' })]), false)}
             >
               Open in Merge &amp; Pages
             </button>
@@ -651,9 +674,9 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
           </button>
         </div>
       )}
+      {find && st.docId && <FindBar onClose={() => setFind(false)} />}
       <TiltBanner />
       <PromptDialog />
-      <ProgressBanner />
       {help && <ShortcutHelp onClose={() => setHelp(false)} />}
       {dropActive && st.docId && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-4 border-dashed border-sky-500 bg-sky-50/70 text-lg font-medium text-sky-700">Drop to open this PDF</div>

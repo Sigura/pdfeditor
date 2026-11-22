@@ -99,6 +99,29 @@ describe('documents API', () => {
     expect((await app.request('/api/documents/../../etc/pages/0/model')).status).toBe(404);
   });
 
+  it('returns the original page models with ?originalPages=1, also after an edit, for resuming', async () => {
+    const { mkdtemp } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { DocumentStore } = await import('../src/store.ts');
+    const store = new DocumentStore(await mkdtemp(path.join(os.tmpdir(), 'pdft-')), 60_000);
+    const { app } = createApp({ store });
+    const form = new FormData();
+    form.append('file', new File([await (await makePdf(1, 'Doc')).save()], 'a.pdf'));
+    const info = (await (await app.request('/api/documents', { method: 'POST', body: form })).json()) as { docId: string; pages: { textBoxes: { id: string }[] }[] };
+    const id = info.pages[0]!.textBoxes[0]!.id;
+    const edit = await app.request(`/api/documents/${info.docId}/edits`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'append', ops: [{ type: 'deleteElement', elementId: id }] }) });
+    expect(edit.status).toBe(200);
+    type Doc = { revision: number; ops: unknown[]; pages: { textBoxes: unknown[] }[]; origPages?: { textBoxes: { id: string }[] }[] };
+    const plain = (await (await app.request(`/api/documents/${info.docId}`)).json()) as Doc;
+    expect(plain.origPages).toBeUndefined();
+    const doc = (await (await app.request(`/api/documents/${info.docId}?originalPages=1`)).json()) as Doc;
+    expect(doc.revision).toBe(1);
+    expect(doc.ops).toHaveLength(1);
+    expect(doc.pages[0]!.textBoxes).toHaveLength(0);
+    expect(doc.origPages![0]!.textBoxes.map((b) => b.id)).toEqual([id]);
+  });
+
   it('counts the TTL from the last request, not the last edit', async () => {
     const { mkdtemp, utimes } = await import('node:fs/promises');
     const os = await import('node:os');

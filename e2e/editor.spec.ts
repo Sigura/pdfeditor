@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
@@ -17,7 +19,7 @@ async function textItems(bytes: Uint8Array) {
 
 async function open(page: Page, name: string) {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('tab', { name: 'Edit', exact: true }).click();
   await page.getByTestId('editor-input').setInputFiles(fixture(name));
   await expect(page.getByTestId('overlay')).toBeVisible();
 }
@@ -168,7 +170,7 @@ test('duplicate page: the copy is edited on its own in the editor; Merge repeats
   await expect.poll(order).toEqual([0, 1]);
   await expect(page.getByTestId('editor-error')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Merge & Pages', exact: true }).click();
+  await page.getByRole('tab', { name: 'Merge & Pages', exact: true }).click();
   await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
   const items = page.getByTestId('merge-page');
   await expect(items).toHaveCount(2);
@@ -753,4 +755,379 @@ test('merge: a removed page comes back with Ctrl+Z, Alt+arrows move the focused 
   await page.keyboard.press('Alt+ArrowRight');
   await expect(items.first()).toContainText('p.2');
   await expect(items.nth(1)).toBeFocused();
+});
+
+test('merge: Ctrl+Z takes back only the last change, not the ones after a removal', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([fixture('latin-standard14.pdf'), fixture('table.pdf')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(3);
+  await items.first().focus();
+  await page.keyboard.press('Delete');
+  await expect(items).toHaveCount(2);
+  await items.first().hover();
+  await items.first().getByTestId('page-rotate').click();
+  await expect(items.first()).toContainText('↻ 90°');
+  await items.nth(1).focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await expect(items.first()).toContainText('table.pdf');
+  await page.getByTestId('merge-undo').click();
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText('latin-standard14.pdf');
+  await expect(items.first()).toContainText('↻ 90°');
+  await page.getByTestId('merge-undo').click();
+  await expect(items.first()).not.toContainText('↻ 90°');
+  await page.getByTestId('merge-undo').click();
+  await expect(items).toHaveCount(3);
+});
+
+test('page list changes are named in the Changes list', async ({ page }) => {
+  await open(page, 'paged-table.pdf');
+  const thumbs = page.getByTestId('page-thumb');
+  const tool = async (n: number, id: string) => {
+    await thumbs.nth(n).hover();
+    await thumbs.nth(n).getByTestId(id).click();
+  };
+  const last = () => changes(page).last();
+  await tool(0, 'thumb-rotate');
+  await expect(last()).toHaveText(/Rotate page 1 to 90°/);
+  await tool(0, 'thumb-blank');
+  await expect(last()).toHaveText(/Insert a blank page after page 1/);
+  await thumbs.nth(0).locator('> button').focus();
+  await page.keyboard.press('Alt+ArrowDown');
+  await expect(last()).toHaveText(/Move page 1 to position 2/);
+  await tool(1, 'thumb-delete');
+  await expect(last()).toHaveText(/Delete page 2/);
+  await expect(changes(page)).toHaveCount(4);
+  await expect(page.getByTestId('status-idle')).toHaveText(/^Ready · paged-table\.pdf · page \d of 2 · 4 changes · not downloaded$/);
+});
+
+test('merge: a zip adds its PDFs in natural order; errors are all listed; Delete keeps the focus on a page', async ({ page }) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'zip-'));
+  for (const [name, src] of [['file10.pdf', 'table.pdf'], ['file2.pdf', 'latin-standard14.pdf'], ['sub/File01.pdf', 'table.pdf'], ['notes.txt', 'table.pdf']] as const) {
+    mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    copyFileSync(fixture(src), path.join(dir, name));
+  }
+  execFileSync('zip', ['-q', '-r', 'set.zip', 'file10.pdf', 'sub', 'notes.txt'], { cwd: dir });
+  execFileSync('zip', ['-q', '-0', 'set.zip', 'file2.pdf'], { cwd: dir });
+  writeFileSync(path.join(dir, 'empty.zip'), Buffer.from('PK\x05\x06' + '\0'.repeat(18), 'latin1'));
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([path.join(dir, 'set.zip'), path.join(dir, 'empty.zip'), path.join(dir, 'notes.txt')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(4);
+  const names = await items.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')!.split(',')[0]));
+  // Natural order of the paths inside the zip, so a folder's files stay together.
+  expect(names).toEqual(['file2.pdf page 1', 'file2.pdf page 2', 'file10.pdf page 1', 'File01.pdf page 1']);
+  await expect(page.getByTestId('merge-error')).toHaveText(/empty\.zip: no PDF files inside\s+notes\.txt: not a PDF or zip/);
+  await expect(page.getByTestId('status-idle')).toHaveText('Ready · 3 files · 4 pages');
+  await items.nth(1).focus();
+  await page.keyboard.press('Delete');
+  await expect(items).toHaveCount(3);
+  await expect(items.nth(1)).toBeFocused();
+  await expect(items.nth(1)).toContainText('file10.pdf');
+});
+
+test('merge: Add folder adds its PDFs and zips recursively in natural order of their paths, skipping other files', async ({ page }) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'folder-'));
+  const root = path.join(dir, 'docs');
+  for (const [name, src] of [['b/file1.pdf', 'table.pdf'], ['a/file10.pdf', 'table.pdf'], ['a/file02.pdf', 'latin-standard14.pdf'], ['readme.txt', 'table.pdf']] as const) {
+    mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+    copyFileSync(fixture(src), path.join(root, name));
+  }
+  copyFileSync(fixture('table.pdf'), path.join(dir, 'z3.pdf'));
+  execFileSync('zip', ['-q', path.join(root, 'a', 'file3.zip'), 'z3.pdf'], { cwd: dir });
+  await page.goto('/');
+  await page.getByTestId('merge-folder-input').setInputFiles(root);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(5);
+  const names = await items.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')!.split(',')[0]));
+  expect(names).toEqual(['file02.pdf page 1', 'file02.pdf page 2', 'z3.pdf page 1', 'file10.pdf page 1', 'file1.pdf page 1']);
+  await expect(page.getByTestId('merge-error')).toHaveCount(0);
+});
+
+test('Esc: leaves table setup (Step 1 and the mesh), returns to the Select tool, reverts an Inspector field', async ({ page }) => {
+  await open(page, 'table.pdf');
+  const tools = page.getByTestId('tools');
+  const active = () => tools.locator('button.bg-sky-600');
+  await tools.getByRole('button', { name: 'Table', exact: true }).click();
+  await page.getByTestId('table-setup-start').click();
+  await page.getByTestId('setup-cols').focus();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('setup-step1')).toHaveCount(0);
+  await expect(active()).toHaveText('Table');
+  await page.getByTestId('table-setup-start').click();
+  await page.getByTestId('setup-ok').click();
+  const vertex = page.getByTestId('setup-vertex').first();
+  await vertex.click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('setup-toolbar')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('setup-toolbar')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(active()).toHaveText('Select');
+  await expect(changes(page)).toHaveCount(0);
+
+  await page.getByTestId('text-box').first().click();
+  const x = page.getByTestId('insp-x');
+  const before = await x.inputValue();
+  await x.fill('123');
+  await x.press('Escape');
+  await expect(x).toHaveValue(before);
+  await expect(x).not.toBeFocused();
+  await expect(changes(page)).toHaveCount(0);
+});
+
+test('dialogs keep Tab inside, give the focus back on close and cancel on a backdrop click', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  await expect(page.getByTestId('merge-page')).toHaveCount(2);
+  const clear = page.getByTestId('merge-clear');
+  await clear.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByTestId('confirm-dialog');
+  await expect(page.getByTestId('dialog-ok')).toBeFocused();
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('Tab');
+    expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+  }
+  await page.keyboard.press('Shift+Tab');
+  expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(clear).toBeFocused();
+  await clear.click();
+  await page.mouse.click(5, 5);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('merge-page')).toHaveCount(2);
+});
+
+test('glyph buttons have names; tools, align and tabs expose their state', async ({ page }) => {
+  await open(page, 'table.pdf');
+  await expect(page.getByRole('tab', { name: 'Edit', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'false');
+  for (const name of ['Zoom in', 'Zoom out', 'Undo', 'Redo']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  const tools = page.getByTestId('tools');
+  await expect(tools.getByRole('button', { name: 'Select', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await tools.getByRole('button', { name: 'Add text', exact: true }).click();
+  await expect(tools.getByRole('button', { name: 'Add text', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('text-box').first().click();
+  await expect(page.getByRole('button', { name: 'Align left' })).toHaveAttribute('aria-pressed', /true|false/);
+  await expect(page.getByRole('spinbutton', { name: 'Line spacing' })).toHaveCount(1);
+  await expect(page.getByLabel('Text colour')).toHaveCount(1);
+});
+
+test('thumbnails: R / Shift+R rotate both ways, Delete removes the focused editor page and keeps the focus on a page', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  const items = page.getByTestId('merge-page');
+  await items.first().focus();
+  await page.keyboard.press('Shift+R');
+  await expect(items.first()).toContainText('↻ 270°');
+  await items.first().hover();
+  await items.first().getByTestId('page-rotate').click({ modifiers: ['Shift'] });
+  await expect(items.first()).toContainText('↻ 180°');
+
+  await open(page, 'paged-table.pdf');
+  const thumb = (n: number) => page.getByTestId('page-thumb').nth(n).locator('> button');
+  await thumb(0).focus();
+  await page.keyboard.press('r');
+  await expect(changes(page).last()).toHaveText(/Rotate page 1 to 90°/);
+  await thumb(0).focus();
+  await page.keyboard.press('Shift+R');
+  await expect(changes(page).last()).toHaveText(/Rotate page 1 to 0°/);
+  await thumb(0).focus();
+  await page.keyboard.press('Delete');
+  await expect(changes(page).last()).toHaveText(/Delete page 1/);
+  await expect(page.getByTestId('page-thumb')).toHaveCount(1);
+  await expect(thumb(0)).toBeFocused();
+});
+
+test('dropping several PDFs on the editor offers to combine them in Merge & Pages', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Edit', exact: true }).click();
+  const files = [fixture('table.pdf'), fixture('latin-standard14.pdf')].map((f) => ({ name: path.basename(f), data: [...readFileSync(f)] }));
+  const dt = await page.evaluateHandle((list) => {
+    const d = new DataTransfer();
+    for (const f of list) d.items.add(new File([new Uint8Array(f.data)], f.name, { type: 'application/pdf' }));
+    return d;
+  }, files);
+  await page.getByTestId('editor-dropzone').dispatchEvent('drop', { dataTransfer: dt });
+  await expect(page.getByTestId('confirm-dialog')).toContainText('2 files dropped');
+  await page.getByTestId('dialog-ok').click();
+  await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('merge-page')).toHaveCount(3);
+});
+
+test('a reload reopens the document with its changes; an expired one says so', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  await page.getByTestId('text-box').first().click();
+  await page.keyboard.press('ArrowRight');
+  await expect(changes(page)).toHaveCount(1);
+  await page.reload();
+  await expect(page.getByRole('tab', { name: 'Edit', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('overlay')).toBeVisible();
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('Move');
+  await expect(page.getByTestId('unsaved')).toBeVisible();
+  await page.keyboard.press('Control+z');
+  await expect(changes(page)).toHaveCount(0);
+
+  await page.route('**/api/documents/*?originalPages=1', (route) => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'NOT_FOUND', message: 'This document has expired. Reopen the file.' } }) }));
+  await page.reload();
+  await expect(page.getByTestId('editor-error')).toContainText('This document has expired');
+  await expect(page.getByTestId('editor-dropzone')).toBeVisible();
+  await page.unroute('**/api/documents/*?originalPages=1');
+  await page.reload();
+  await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('Tab reaches the text boxes and table handles on the page and selects them', async ({ page }) => {
+  await open(page, 'table.pdf');
+  await page.getByTestId('download').focus();
+  const active = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? '');
+  for (let i = 0; i < 60 && (await active()) !== 'table-handle'; i++) await page.keyboard.press('Tab');
+  expect(await active()).toBe('table-handle');
+  await expect(page.locator('[data-testid=table].outline-violet-600')).toHaveCount(1);
+  for (let i = 0; i < 10 && (await active()) !== 'text-box'; i++) await page.keyboard.press('Tab');
+  const first = await page.evaluate(() => document.activeElement!.getAttribute('data-box-id'));
+  await expect(page.getByTestId('inspector-box')).toBeVisible();
+  await expect(page.locator(`[data-box-id="${first}"]`)).toHaveClass(/outline-sky-600/);
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('box-editor')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(changes(page)).toHaveCount(0);
+
+  await page.getByTestId('text-box').nth(1).click();
+  await expect(page.getByTestId('box-editor')).toHaveCount(0);
+  await expect(page.getByTestId('inspector-box')).toBeVisible();
+});
+
+test('find and replace: Ctrl+F finds cells and boxes, Enter selects the match, Replace and Replace all edit them', async ({ page }) => {
+  await open(page, 'table.pdf');
+  await page.keyboard.press('Control+f');
+  const input = page.getByTestId('find-input');
+  await expect(input).toBeFocused();
+  await input.fill('apples');
+  await expect(page.getByTestId('find-count')).toHaveText('1 of 1');
+  await input.press('Enter');
+  await expect(page.getByTestId('inspector-cell')).toContainText('Apples');
+  await page.getByTestId('replace-input').fill('Plums');
+  await page.getByTestId('replace-one').click();
+  await expect(changes(page).last()).toHaveText(/→ “Plums”/);
+  await expect(page.getByTestId('find-count')).toHaveText('no matches');
+  await input.fill('plum');
+  await expect(page.getByTestId('find-count')).toHaveText('1 of 1');
+
+  // A fresh tab: otherwise the reload reopens the edited table.pdf.
+  await page.evaluate(() => sessionStorage.clear());
+  await open(page, 'latin-standard14.pdf');
+  await page.keyboard.press('Control+f');
+  await page.getByTestId('find-input').fill('report');
+  const count = Number((await page.getByTestId('find-count').textContent())!.split(' of ')[1]);
+  expect(count).toBeGreaterThan(0);
+  await page.getByTestId('find-input').press('Enter');
+  await expect(page.getByTestId('inspector-box')).toBeVisible();
+  await page.getByTestId('replace-input').fill('Summary');
+  await page.getByTestId('replace-all').click();
+  await expect(changes(page)).toHaveCount(count);
+  await expect(page.getByTestId('find-count')).toHaveText('no matches');
+  await page.getByTestId('find-input').press('Escape');
+  await expect(page.getByTestId('find-bar')).toHaveCount(0);
+});
+
+test('page labels show on thumbnails, in the page box and in Merge; the download keeps them on their pages', async ({ page }) => {
+  await open(page, 'labelled.pdf');
+  const nos = page.getByTestId('thumb-no');
+  await expect(nos).toHaveText(['1 · i', '2 · ii', '3 · A-1', '4 · A-2']);
+  await expect(page.getByTestId('page-label')).toHaveText('(i)');
+  await page.getByTestId('page-thumb').nth(2).locator('> button').focus();
+  await page.keyboard.press('Alt+ArrowUp');
+  await expect(changes(page)).toHaveCount(1);
+  await page.getByTestId('page-thumb').nth(3).hover();
+  await page.getByTestId('page-thumb').nth(3).getByTestId('thumb-delete').click();
+  await expect(changes(page)).toHaveCount(2);
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  expect(await doc.getPageLabels()).toEqual(['i', 'A-1', 'ii']);
+  await doc.destroy();
+
+  await page.evaluate(() => sessionStorage.clear());
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('labelled.pdf'));
+  await expect(page.getByTestId('merge-page').nth(2)).toContainText('p.3 · A-1');
+});
+
+test('merge: Shift/Ctrl+click select pages; R, Delete and drag act on the whole selection; Ctrl+A and Esc', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([fixture('labelled.pdf'), fixture('table.pdf')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(5);
+  const names = () => items.evaluateAll((els) => els.map((e) => e.querySelector('.ml-auto')?.textContent?.split(' ·')[0] ?? ''));
+  await items.nth(0).click({ position: { x: 20, y: 60 } });
+  await items.nth(2).click({ position: { x: 20, y: 60 }, modifiers: ['Shift'] });
+  await expect(page.getByTestId('merge-selection')).toContainText('3 selected');
+  await items.nth(1).focus();
+  await page.keyboard.press('r');
+  for (const k of [0, 1, 2]) await expect(items.nth(k)).toContainText('↻ 90°');
+  await expect(items.nth(3)).not.toContainText('↻ 90°');
+  await items.nth(1).click({ position: { x: 20, y: 60 }, modifiers: ['Control'] });
+  await expect(page.getByTestId('merge-selection')).toContainText('2 selected');
+  await items.nth(0).dragTo(items.nth(4));
+  expect(await names()).toEqual(['p.2', 'p.4', 'p.1', 'p.1', 'p.3']);
+  await page.getByTestId('selection-delete').click();
+  await expect(items).toHaveCount(3);
+  await page.keyboard.press('Control+z');
+  await expect(items).toHaveCount(5);
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press('Control+a');
+  await expect(page.getByTestId('merge-selection')).toContainText('5 selected');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('merge-selection')).toHaveCount(0);
+});
+
+test('merge export: selected pages as a PDF, each file and every N pages as a zip', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([fixture('labelled.pdf'), fixture('table.pdf')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(5);
+  const pdfPages = async (bytes: Uint8Array) => {
+    const doc = await getDocument({ data: bytes, isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+    const n = doc.numPages;
+    await doc.destroy();
+    return n;
+  };
+  const exportVia = async (testId: string) => {
+    await page.getByTestId('merge-export').click();
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId(testId).click()]);
+    return { name: download.suggestedFilename(), path: (await download.path())! };
+  };
+  const unzip = (file: string) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'export-'));
+    execFileSync('unzip', ['-q', file, '-d', dir]);
+    return dir;
+  };
+
+  await items.nth(1).click({ position: { x: 20, y: 60 } });
+  await items.nth(4).click({ position: { x: 20, y: 60 }, modifiers: ['Control'] });
+  const sel = await exportVia('export-selected');
+  expect(sel.name).toBe('labelled-selected.pdf');
+  expect(await pdfPages(new Uint8Array(readFileSync(sel.path)))).toBe(2);
+
+  const perFile = await exportVia('export-files');
+  expect(perFile.name).toBe('labelled-files.zip');
+  const d1 = unzip(perFile.path);
+  expect(await pdfPages(new Uint8Array(readFileSync(path.join(d1, 'labelled.pdf'))))).toBe(4);
+  expect(await pdfPages(new Uint8Array(readFileSync(path.join(d1, 'table.pdf'))))).toBe(1);
+
+  await page.getByTestId('merge-export').click();
+  await page.getByTestId('export-every').fill('2');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('export-menu')).toHaveCount(0);
+  const split = await exportVia('export-split');
+  const d2 = unzip(split.path);
+  expect(execFileSync('ls', [d2]).toString().trim().split('\n')).toEqual(['labelled-part1.pdf', 'labelled-part2.pdf', 'labelled-part3.pdf']);
+  expect(await pdfPages(new Uint8Array(readFileSync(path.join(d2, 'labelled-part3.pdf'))))).toBe(1);
 });
