@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { DocumentInfo } from '@pdf-toolkit/shared';
+import type { DocumentInfo, EditOperation } from '@pdf-toolkit/shared';
 import { apiError, downloadBlob } from '../lib/api.ts';
 import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
 import { opPage } from './Changes.tsx';
@@ -30,29 +30,69 @@ function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc
   );
 }
 
-/** New page (copy header/footer, empty) or Cancel for content pushed past the last page; Shrink/Cancel for a column that doesn't fit the page. */
+/**
+ * New page (copy header/footer, empty) or Cancel for content pushed past the last page, with the
+ * questions that go with it (repeat a cut table's header rows, keep a copied page number);
+ * Yes/No on repeating header rows for a table cut onto an existing page; Shrink/Cancel for a column
+ * that doesn't fit the page.
+ */
 function PromptDialog() {
   const { prompt, setPrompt, revert, edit, busy } = useEditor();
+  const [repeat, setRepeat] = useState(true);
+  const [numbers, setNumbers] = useState<'keep' | 'omit'>('omit');
+  useEffect(() => {
+    setRepeat(true);
+    setNumbers('omit');
+  }, [prompt]);
   if (!prompt) return null;
+  const continued = (repeatHeader: boolean): EditOperation[] => (prompt.kind === 'colFit' ? [] : prompt.tableIds.map((tableId) => ({ type: 'tableContinuation', tableId, repeatHeader })));
+  const newPage = (newPages: 'copy' | 'empty'): EditOperation[] => [{ type: 'setPageFlow', newPages, ...(newPages === 'copy' && prompt.kind === 'newPage' && prompt.pageNumber && { pageNumbers: numbers }) }, ...continued(repeat)];
   const choices: { label: string; testId: string; primary?: boolean; run: () => void }[] =
     prompt.kind === 'newPage'
       ? [
           { label: 'Cancel', testId: 'prompt-cancel', run: () => void revert(prompt.count) },
-          { label: 'Empty page (same size)', testId: 'prompt-empty', run: () => (setPrompt(null), void edit([{ type: 'setPageFlow', newPages: 'empty' }])) },
-          { label: 'Copy header/footer', testId: 'prompt-copy', primary: true, run: () => (setPrompt(null), void edit([{ type: 'setPageFlow', newPages: 'copy' }])) },
+          { label: 'Empty page (same size)', testId: 'prompt-empty', run: () => (setPrompt(null), void edit(newPage('empty'))) },
+          { label: 'Copy header/footer', testId: 'prompt-copy', primary: true, run: () => (setPrompt(null), void edit(newPage('copy'))) },
         ]
-      : [
-          { label: 'Cancel', testId: 'prompt-cancel', run: () => setPrompt(null) },
-          { label: 'Shrink other columns', testId: 'prompt-shrink', primary: true, run: () => (setPrompt(null), void edit([{ ...prompt.op, fit: 'shrink' }])) },
-        ];
+      : prompt.kind === 'continuation'
+        ? [
+            { label: 'No', testId: 'prompt-no', run: () => (setPrompt(null), void edit(continued(false))) },
+            { label: 'Yes', testId: 'prompt-yes', primary: true, run: () => (setPrompt(null), void edit(continued(true))) },
+          ]
+        : [
+            { label: 'Cancel', testId: 'prompt-cancel', run: () => setPrompt(null) },
+            { label: 'Shrink other columns', testId: 'prompt-shrink', primary: true, run: () => (setPrompt(null), void edit([{ ...prompt.op, fit: 'shrink' }])) },
+          ];
   const text =
     prompt.kind === 'newPage'
       ? `Content runs ${prompt.by.toFixed(1)} pt past the bottom of the last page (${prompt.pageIndex + 1}). Continue it on a new page?`
-      : `The new column would make the table exceed the page width by ${prompt.by.toFixed(1)} pt. Shrink the other columns proportionally (text wraps, font size stays) or cancel?`;
+      : prompt.kind === 'continuation'
+        ? `A table continues on page ${prompt.pageIndex + 1}. Repeat header rows on the continued part?`
+        : `The new column would make the table exceed the page width by ${prompt.by.toFixed(1)} pt. Shrink the other columns proportionally (text wraps, font size stays) or cancel?`;
+  const radio = (name: string, testId: string, label: string, checked: boolean, onChange: () => void) => (
+    <label className="mr-3 inline-flex items-center gap-1">
+      <input type="radio" name={name} data-testid={testId} checked={checked} onChange={onChange} />
+      {label}
+    </label>
+  );
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" data-testid="prompt">
       <div className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl">
         <p className="mb-3">{text}</p>
+        {prompt.kind === 'newPage' && prompt.tableIds.length > 0 && (
+          <div className="mb-2">
+            <div className="mb-1">Repeat header rows on the continued part?</div>
+            {radio('repeat', 'prompt-repeat-yes', 'Yes', repeat, () => setRepeat(true))}
+            {radio('repeat', 'prompt-repeat-no', 'No', !repeat, () => setRepeat(false))}
+          </div>
+        )}
+        {prompt.kind === 'newPage' && prompt.pageNumber && (
+          <div className="mb-3">
+            <div className="mb-1">The copied header/footer has a page number (“{prompt.pageNumber}”):</div>
+            {radio('numbers', 'prompt-number-keep', 'Keep verbatim', numbers === 'keep', () => setNumbers('keep'))}
+            {radio('numbers', 'prompt-number-omit', 'Leave out', numbers === 'omit', () => setNumbers('omit'))}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           {choices.map((c) => (
             <button key={c.testId} data-testid={c.testId} className={c.primary ? 'rounded bg-sky-600 px-3 py-1.5 text-white' : 'rounded px-3 py-1.5 hover:bg-slate-100'} disabled={busy} onClick={c.run}>

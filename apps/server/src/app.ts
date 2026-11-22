@@ -135,7 +135,7 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
       meta.revision += 1;
       await store.saveMeta(meta);
       analyses.set(`${id}@${meta.revision}`, Promise.resolve({ pageCount: result.pages.length, pages: result.pages, decrypted: false }));
-      const out: EditResult = { docId: id, revision: meta.revision, ops, reports: result.reports, warnings: result.warnings, overflows: result.overflows, pages: result.pages };
+      const out: EditResult = { docId: id, revision: meta.revision, ops, reports: result.reports, warnings: result.warnings, overflows: result.overflows, continuations: result.continuations, pages: result.pages };
       return out;
     });
     return c.json(body);

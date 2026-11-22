@@ -22,12 +22,14 @@ export type DocumentInfo = z.infer<typeof DocumentInfoSchema>;
 /**
  * `needsPage`: the content runs past the last page and no setPageFlow op says how to add pages.
  * `needsLayout`: scanned pages the flow reaches that have no scanLayout op yet.
+ * `pageNumber`: text of the last page's header/footer that looks like a page number, which a copy page would repeat.
  */
 export const PageOverflowSchema = z.object({
   pageIndex: z.number().int(),
   by: z.number(),
   needsPage: z.boolean().optional(),
   needsLayout: z.array(z.number().int()).optional(),
+  pageNumber: z.string().optional(),
 });
 export type PageOverflow = z.infer<typeof PageOverflowSchema>;
 
@@ -39,6 +41,11 @@ export const EditResultSchema = z.object({
   warnings: z.array(z.string()),
   /** Pages whose content was pushed past the bottom edge by growing tables, and by how many points. */
   overflows: z.array(PageOverflowSchema),
+  /**
+   * Tables with header rows that the flow cuts (or would cut, onto the new page a `needsPage` overflow
+   * asks for) and no tableContinuation op decides about; `pageIndex` is where the continued part starts.
+   */
+  continuations: z.array(z.object({ tableId: z.string(), pageIndex: z.number().int() })),
   pages: z.array(PageModelSchema),
 });
 export type EditResult = z.infer<typeof EditResultSchema>;

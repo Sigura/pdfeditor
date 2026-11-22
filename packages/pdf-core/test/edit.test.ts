@@ -809,6 +809,53 @@ describe('table paging (paged-table.pdf)', () => {
     expect(reopened[2]!.model.textBoxes.map((b) => b.text).join('\n')).toContain(body(8));
   });
 
+  it('a cut table asks about its header rows; repeated, they top every continued part and push its rows down by their height', async () => {
+    const { original, t } = await setup();
+    const rows = Array.from({ length: 60 }, () => ({ type: 'tableInsertRow' as const, tableId: t.id, index: 3, position: 'below' as const }));
+    const ask = await applyEdits(original, rows);
+    // Cut onto page 2 and again onto the new pages: the table is asked about once, at its first cut.
+    expect(ask.continuations).toEqual([{ tableId: t.id, pageIndex: 1 }]);
+    const flow = { type: 'setPageFlow' as const, newPages: 'copy' as const };
+    const run = (repeatHeader: boolean) => applyEdits(original, [...rows, flow, { type: 'tableContinuation', tableId: t.id, repeatHeader }]);
+    const [yes, no] = await Promise.all([run(true), run(false)]);
+    expect(yes.continuations).toEqual([]);
+    expect(no.continuations).toEqual([]);
+    const headerH = t.rows[0]!.y1 - t.rows[0]!.y0;
+    const item = (texts: { str: string; y: number }[][]) => texts.map((p) => p.filter((x) => x.str === 'Item').length);
+    const [yesTexts, noTexts] = await Promise.all([pageTexts(yes.bytes), pageTexts(no.bytes)]);
+    expect(item(noTexts)).toEqual([1, 0, 0, 0]);
+    expect(item(yesTexts)).toEqual([1, 1, 1, 1]);
+    for (const k of [1, 2, 3]) {
+      const piece = yes.pages[k]!.tables.find((x) => x.id === t.id)!;
+      expect(piece.rows[0]!.index).toBe(0);
+      expect(piece.cells.find((c) => c.row === 0 && c.col === 0)!.text).toBe('Item');
+      expect(piece.rows[1]!.y1).toBeCloseTo(piece.rows[0]!.y0, 1);
+      if (k === 1) {
+        // Where the part without a header starts, the header now sits; the rows move down by its height.
+        const plain = no.pages[1]!.tables.find((x) => x.id === t.id)!;
+        expect(piece.rows[0]!.y1).toBeCloseTo(plain.rows[0]!.y1, 1);
+        expect(piece.rows[1]!.y1).toBeCloseTo(plain.rows[0]!.y1 - headerH, 1);
+      }
+      // The header's text sits at the top of the continued part, above its rows.
+      const yItem = yesTexts[k]!.find((x) => x.str === 'Item')!.y;
+      expect(yItem).toBeGreaterThan(piece.rows[1]!.y1);
+      expect(yItem).toBeLessThan(piece.rows[0]!.y1);
+    }
+    expect(yes.pages.reduce((n, p) => n + p.tables[0]!.rows.length, 0)).toBe(t.rows.length + 60 + 3);
+  });
+
+  it('a copied page-number footer is reported with the overflow and is left out on copy pages when asked', async () => {
+    const { original, t } = await setup();
+    const rows = Array.from({ length: 30 }, () => ({ type: 'tableInsertRow' as const, tableId: t.id, index: 3, position: 'below' as const }));
+    const ask = await applyEdits(original, rows);
+    expect(ask.overflows).toMatchObject([{ pageIndex: 1, needsPage: true, pageNumber: 'Page 2' }]);
+    const omit = await applyEdits(original, [...rows, { type: 'setPageFlow', newPages: 'copy', pageNumbers: 'omit' }]);
+    const texts = await pageTexts(omit.bytes);
+    expect(texts[2]!.some((x) => x.str === 'Page 2')).toBe(false);
+    expect(texts[2]!.filter((x) => x.str === 'Quarterly report')).toHaveLength(1);
+    expect(texts[1]!.filter((x) => x.str === 'Page 2')).toHaveLength(1);
+  });
+
   it('scanned page: asks for a measured layout, then copies the scan bands as crops onto paper', async () => {
     const original = fixture('paged-scan.pdf');
     const xs = [60, 220, 340, 460, 535];
@@ -819,7 +866,11 @@ describe('table paging (paged-table.pdf)', () => {
     expect((await applyEdits(original, [define, ...rows])).overflows).toEqual([{ pageIndex: 0, by: 0, needsLayout: [0] }]);
     const lines = [{ y0: 798, y1: 808 }, ...Array.from({ length: 16 }, (_, i) => ({ y0: 740 - i * 16, y1: 748 - i * 16 })), { y0: 100, y1: 108 }, { y0: 28, y1: 38 }];
     const layout = { type: 'scanLayout' as const, pageIndex: 0, lines, paper: grey(246) };
-    expect((await applyEdits(original, [define, ...rows, layout])).overflows).toMatchObject([{ pageIndex: 0, needsPage: true }]);
+    const ask = await applyEdits(original, [define, ...rows, layout]);
+    expect(ask.overflows).toMatchObject([{ pageIndex: 0, needsPage: true }]);
+    // No page-number question on a scan (no text), but the table the new page would cut is asked about.
+    expect(ask.overflows[0]!.pageNumber).toBeUndefined();
+    expect(ask.continuations).toEqual([{ tableId: 't-scan', pageIndex: 1 }]);
     const res = await applyEdits(original, [define, ...rows, layout, { type: 'setPageFlow', newPages: 'copy' }]);
     expect(res.pages).toHaveLength(2);
     const [p0, p1] = res.pages.map((p) => p.tables.find((x) => x.id === 't-scan')!);

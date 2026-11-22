@@ -384,6 +384,7 @@ export function reduceEdits(pages: PageModel[], ops: EditOperation[]): EditState
       }
       case 'setPageFlow':
       case 'scanLayout':
+      case 'tableContinuation':
         // Read by applyEdits for the page flow.
         break;
       case 'defineTable':

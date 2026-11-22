@@ -4,6 +4,7 @@ import { applyPatch, emptyPatch, type ParsedContent } from '../content/parser.ts
 import { pageContentBytes } from '../model/extract.ts';
 import { FontCache, interpretPage, type ImageItem, type RunInternal } from '../model/interpreter.ts';
 import { apply, mul, rectFromPoints } from '../math.ts';
+import { headerRowsOf } from '../model/tablePattern.ts';
 import { removalOp } from './apply.ts';
 import { fillOp } from './raster.ts';
 
@@ -11,17 +12,23 @@ type Span = { y0: number; y1: number };
 /**
  * A painted element of a page: `y0`/`y1` where the edited page draws it, `orig` where it was before
  * the reflow under tables (absent: new content). `pushed`: moved by a table's growth (or a table row
- * that did), the only content that may leave its page.
+ * that did), the only content that may leave its page. `tableId`/`row`: a table row (or merged cell).
+ * `pageNumber`: a text box that reads like a page number, with its horizontal extent.
  */
-export type FlowUnit = Span & { orig?: Span; table?: boolean; pushed?: boolean };
+export type FlowUnit = Span & { orig?: Span; table?: boolean; pushed?: boolean; tableId?: string; row?: number; pageNumber?: { text: string; x0: number; x1: number } };
 export type FlowPage = {
   view: Rect;
   units: FlowUnit[];
+  /** Header-row bands of the page's tables (those with header rows and body rows under them). */
+  headers?: Record<string, Span>;
   /** Scanned page with a measured layout: uncovered areas get the paper colour. */
   paper?: Color;
 };
-/** The edited page `src`, clipped to its band `y0..y1` and translated by `dy`. */
-export type FlowDraw = Span & { src: number; dy: number };
+/**
+ * The edited page `src`, clipped to its band `y0..y1` and translated by `dy`. `repeat`: the header rows
+ * of that table, repeated over its continued part. `omit`: areas whose text is left out (page numbers).
+ */
+export type FlowDraw = Span & { src: number; dy: number; repeat?: string; omit?: Rect[] };
 export type PagePlan = {
   draws: FlowDraw[];
   /** Areas (in this page's coordinates) holding content of earlier pages. */
@@ -34,8 +41,20 @@ export type FlowPlan = {
   /** Original page whose header/footer bands the added pages copy (or undefined for empty pages). */
   template?: number;
   added: number;
-  /** Content left past the body bottom of the last page (no new pages allowed, or a block taller than the body). */
-  overflow?: { pageIndex: number; by: number };
+  /**
+   * Content left past the body bottom of the last page (no new pages allowed, or a block taller than
+   * the body); `pageNumber`: page-number text in the last page's header/footer, which a copy page repeats.
+   */
+  overflow?: { pageIndex: number; by: number; pageNumber?: string };
+  /** Tables cut by the flow: `pageIndex` is the first page of the continued part. */
+  splits: { tableId: string; pageIndex: number }[];
+};
+
+export type FlowOptions = {
+  /** Tables whose header rows are repeated over every continued part. */
+  repeat?: Set<string>;
+  /** Page-number texts of the copied header/footer bands on added pages. */
+  pageNumbers?: 'keep' | 'omit';
 };
 
 const HEADER_ZONE = 0.12;
@@ -44,15 +63,17 @@ const MAX_MARGIN = 72;
 const MAX_GAP = 24;
 const EPS = 0.5;
 
-const clusters = (spans: (Span & { table?: boolean; pushed?: boolean })[]) => {
-  const out: (Span & { table: boolean; pushed: boolean })[] = [];
+type TableRef = { tableId?: string; row?: number };
+const clusters = (spans: (Span & TableRef & { table?: boolean; pushed?: boolean })[]) => {
+  const out: (Span & TableRef & { table: boolean; pushed: boolean })[] = [];
   for (const s of [...spans].sort((a, b) => b.y1 - a.y1)) {
     const last = out.at(-1);
     if (last && s.y1 > last.y0 + EPS) {
       last.y0 = Math.min(last.y0, s.y0);
       last.table ||= !!s.table;
       last.pushed ||= !!s.pushed;
-    } else out.push({ y0: s.y0, y1: s.y1, table: !!s.table, pushed: !!s.pushed });
+      if (s.tableId !== undefined && (last.tableId === undefined || s.row! < last.row!)) [last.tableId, last.row] = [s.tableId, s.row];
+    } else out.push({ y0: s.y0, y1: s.y1, table: !!s.table, pushed: !!s.pushed, ...(s.tableId !== undefined && { tableId: s.tableId, row: s.row }) });
   }
   return out;
 };
@@ -78,15 +99,17 @@ export function pageBands(view: Rect, units: FlowUnit[]): { header?: Span; foote
   return { ...(header && { header }), ...(footer && { footer }) };
 }
 
-type Cluster = Span & { src: number; table: boolean; pushed: boolean; gapAbove: number };
+/** `repeat`: a copy of a table's header rows over its continued part (not content of its own). */
+type Cluster = Span & TableRef & { src: number; table: boolean; pushed: boolean; gapAbove: number; repeat?: string };
 
 /**
  * Lays the body content of every page out again: content pushed past a page's body bottom continues
  * at the top of the next page's body, whose own body moves down by as much and overflows in turn.
  * Past the last page, `newPages` decides whether pages are added. Cuts fall between clusters of
- * overlapping elements (table rows are separate clusters), so nothing is split.
+ * overlapping elements (table rows are separate clusters), so nothing is split. A table cut this way
+ * repeats its header rows at the top of the continued part when `opts.repeat` has it.
  */
-export function planFlow(pages: FlowPage[], newPages: 'copy' | 'empty' | undefined): FlowPlan {
+export function planFlow(pages: FlowPage[], newPages: 'copy' | 'empty' | undefined, opts: FlowOptions = {}): FlowPlan {
   const info = pages.map((p) => {
     const { header, footer } = pageBands(p.view, p.units);
     const kind = (u: FlowUnit) => (u.orig && !u.table && header && u.orig.y0 >= header.y0 - EPS ? 'header' : u.orig && !u.table && footer && u.orig.y1 <= footer.y1 + EPS ? 'footer' : 'body');
@@ -108,6 +131,7 @@ export function planFlow(pages: FlowPage[], newPages: 'copy' | 'empty' | undefin
   let queue: Cluster[] = [];
   let carryGap = 0;
   let overflow: FlowPlan['overflow'];
+  const splits: FlowPlan['splits'] = [];
   const last = info.length - 1;
   for (let k = 0; k < info.length || (queue.length && newPages); k++) {
     const added = k > last;
@@ -134,29 +158,41 @@ export function planFlow(pages: FlowPage[], newPages: 'copy' | 'empty' | undefin
       placed.push({ ...c, dy });
       cursor = c.y0 + dy;
     });
+    const cutTable = out[0]?.tableId;
+    if (cutTable !== undefined && !out[0]!.repeat && placed.some((c) => c.tableId === cutTable && !c.repeat)) {
+      // A repeated header with no row of its table under it goes along with the rows.
+      if (placed.length > 1 && placed.at(-1)!.repeat === cutTable) out.unshift(placed.pop()!);
+      if (!splits.some((s) => s.tableId === cutTable)) splits.push({ tableId: cutTable, pageIndex: k + 1 });
+    }
     const lowest = Math.min(...placed.filter((c) => c.src !== k || c.pushed || Math.abs(c.dy) > 0.01).map((c) => c.y0 + c.dy));
-    if (k === last && !newPages && lowest < lim.bottom - 0.05) overflow = { pageIndex: k, by: Math.round((lim.bottom - lowest) * 10) / 10 };
+    if (k === last && !newPages && lowest < lim.bottom - 0.05) {
+      const pageNumber = info[last]!.fixed.find((u) => u.pageNumber)?.pageNumber?.text;
+      overflow = { pageIndex: k, by: Math.round((lim.bottom - lowest) * 10) / 10, ...(pageNumber && { pageNumber }) };
+    }
     const moved = placed.filter((c) => c.src !== k || Math.abs(c.dy) > 0.01);
     const fixedMoved = i?.fixed.some((u) => Math.abs(u.orig!.y1 - u.y1) > 0.01) ?? false;
     if (!added && !moved.length && !out.length && !fixedMoved) {
       plans.push(undefined);
     } else {
-      plans.push(pagePlan(k, i, placed, out, added && newPages === 'copy' ? info[last]! : undefined, last));
+      plans.push(pagePlan(k, i, placed, out, added && newPages === 'copy' ? info[last]! : undefined, last, opts));
     }
     carryGap = out.length ? Math.min(MAX_GAP, Math.max(0, out[0]!.gapAbove)) : 0;
+    const head = out[0];
+    const band = head?.tableId !== undefined && !head.repeat && opts.repeat?.has(head.tableId) ? pages[head.src]!.headers?.[head.tableId] : undefined;
+    if (band && head!.y1 <= band.y0 + EPS) out.unshift({ ...band, src: head!.src, table: true, pushed: true, gapAbove: 0, repeat: head!.tableId });
     queue = out.map((c, n) => (n === 0 ? { ...c, gapAbove: 0 } : c));
   }
-  return { pages: plans, ...(newPages === 'copy' && plans.length > info.length && { template: last }), added: Math.max(0, plans.length - info.length), ...(overflow && { overflow }) };
+  return { pages: plans, ...(newPages === 'copy' && plans.length > info.length && { template: last }), added: Math.max(0, plans.length - info.length), ...(overflow && { overflow }), splits };
 }
 
 type Info = { p: FlowPage; fixed: (FlowUnit & { band: string })[] };
 
-function pagePlan(k: number, i: Info | undefined, placed: (Cluster & { dy: number })[], out: Cluster[], template: Info | undefined, last: number): PagePlan {
+function pagePlan(k: number, i: Info | undefined, placed: (Cluster & { dy: number })[], out: Cluster[], template: Info | undefined, last: number, opts: FlowOptions): PagePlan {
   const draws: FlowDraw[] = [];
   const push = (d: FlowDraw) => {
     const prev = draws.at(-1);
     // Consecutive clusters of one source with one shift: the gap between them holds nothing else of that source.
-    if (prev && prev.src === d.src && Math.abs(prev.dy - d.dy) < 1e-6 && prev.y0 >= d.y0) prev.y0 = Math.min(prev.y0, d.y0);
+    if (prev && !prev.repeat && !d.repeat && prev.src === d.src && Math.abs(prev.dy - d.dy) < 1e-6 && prev.y0 >= d.y0) prev.y0 = Math.min(prev.y0, d.y0);
     else draws.push(d);
   };
   const all = [...placed, ...out];
@@ -182,21 +218,26 @@ function pagePlan(k: number, i: Info | undefined, placed: (Cluster & { dy: numbe
   placed.forEach((c, idx) => {
     if (c.src === k && Math.abs(c.dy) < 0.01 && stTop !== undefined && c.y0 >= stTop - 2) return;
     const p = pad(c, idx);
-    push({ src: c.src, y0: c.y0 - p, y1: c.y1 + p, dy: c.dy });
+    push({ src: c.src, y0: c.y0 - p, y1: c.y1 + p, dy: c.dy, ...(c.repeat && { repeat: c.repeat }) });
     if (c.src !== k && view) flowIn.push({ x0: view.x0, x1: view.x1, y0: c.y0 + c.dy, y1: c.y1 + c.dy });
   });
   const fixedSrc = template ? last : k;
   // Header and footer are drawn as whole bands (one per band and shift); nothing else lies inside them.
   const bands = new Map<string, FlowDraw>();
+  const omit: Rect[] = [];
   for (const u of (template ?? i)?.fixed ?? []) {
     if (!template && stTop !== undefined && !shifted(u) && u.y0 >= stTop - EPS) continue;
+    if (template && u.pageNumber && opts.pageNumbers === 'omit') {
+      omit.push({ x0: u.pageNumber.x0, x1: u.pageNumber.x1, y0: u.y0, y1: u.y1 });
+      continue;
+    }
     const dy = u.orig!.y1 - u.y1;
     const key = `${u.band}|${dy.toFixed(3)}`;
     const b = bands.get(key);
     if (b) [b.y0, b.y1] = [Math.min(b.y0, u.y0 - 1), Math.max(b.y1, u.y1 + 1)];
     else bands.set(key, { src: fixedSrc, y0: u.y0 - 1, y1: u.y1 + 1, dy });
   }
-  draws.push(...bands.values());
+  draws.push(...[...bands.values()].map((b) => (omit.length ? { ...b, omit } : b)));
   const mergedIn = flowIn.length ? [{ ...flowIn[0]!, y0: Math.min(...flowIn.map((r) => r.y0)), y1: Math.max(...flowIn.map((r) => r.y1)) }] : [];
   const paper = (i ?? template)?.p.paper;
   return { draws, flowIn: mergedIn, ...(paper && { paper }) };
@@ -272,8 +313,8 @@ export function writeFlow(doc: PDFDocument, plan: FlowPlan): void {
   const forms = new Map<string, PDFRef>();
   // One form per drawn band: text outside the band is removed (clipping hides it, but text extraction
   // would still find it); its advances stay, so the rest of the line keeps its place.
-  const formOf = (src: number, y0: number, y1: number) => {
-    const key = `${src}|${y0}|${y1}`;
+  const formOf = (src: number, y0: number, y1: number, omit: Rect[] = []) => {
+    const key = `${src}|${y0}|${y1}|${JSON.stringify(omit)}`;
     let ref = forms.get(key);
     if (ref) return ref;
     const page = srcPages[src]!;
@@ -288,7 +329,8 @@ export function writeFlow(doc: PDFDocument, plan: FlowPlan): void {
     const patch = emptyPatch();
     for (const r of p.runs) {
       const mid = (r.bbox.y0 + r.bbox.y1) / 2;
-      if (mid < y0 || mid > y1) patch.replace.set(r.opIndex, removalOp(r));
+      const cx = (r.bbox.x0 + r.bbox.x1) / 2;
+      if (mid < y0 || mid > y1 || omit.some((o) => cx >= o.x0 && cx <= o.x1 && mid >= o.y0 && mid <= o.y1)) patch.replace.set(r.opIndex, removalOp(r));
     }
     // Scans are redrawn as many clipped draws of the whole image; drawing those outside the band too makes rendering crawl.
     for (const [i, b] of p.images) if (b.y1 < y0 || b.y0 > y1) patch.replace.set(i, '');
@@ -304,7 +346,7 @@ export function writeFlow(doc: PDFDocument, plan: FlowPlan): void {
   };
   const lastPage = srcPages[srcPages.length - 1]!;
   // Every source is read before any page is rewritten.
-  for (const pp of plan.pages) for (const d of pp?.draws ?? []) formOf(d.src, d.y0, d.y1);
+  for (const pp of plan.pages) for (const d of pp?.draws ?? []) formOf(d.src, d.y0, d.y1, d.omit);
   plan.pages.forEach((pp, k) => {
     if (!pp) return;
     const page = k < srcPages.length ? srcPages[k]! : null;
@@ -316,7 +358,7 @@ export function writeFlow(doc: PDFDocument, plan: FlowPlan): void {
     if (pp.paper) parts.push(`q ${fillOp(pp.paper)} ${n(mb.x)} ${n(mb.y)} ${n(mb.width)} ${n(mb.height)} re f Q`);
     pp.draws.forEach((d, i) => {
       const name = `PTF${i}`;
-      xobjects.set(PDFName.of(name), formOf(d.src, d.y0, d.y1));
+      xobjects.set(PDFName.of(name), formOf(d.src, d.y0, d.y1, d.omit));
       const y0 = Math.max(d.y0, -1e4) + d.dy;
       const y1 = Math.min(d.y1, 1e4) + d.dy;
       parts.push(`q ${n(x0)} ${n(y0)} ${n(x1 - x0)} ${n(y1 - y0)} re W n 1 0 0 1 0 ${n(d.dy)} cm /${name} Do Q`);
@@ -356,7 +398,8 @@ function shiftDeep<T>(v: T, dy: number): T {
 
 /**
  * Page models after the flow: every text box and table row goes where its band is drawn, keeping its
- * id (a table cut by the flow appears on both pages with its rows split). Added pages get new models.
+ * id (a table cut by the flow appears on both pages with its rows split, plus repeated header rows
+ * on the continued part). Added pages get new models.
  */
 export function flowModels(models: PageModel[], plan: FlowPlan): PageModel[] {
   const out: PageModel[] = models.map((m) => ({ ...m, textBoxes: [...m.textBoxes], tables: [...m.tables] }));
@@ -367,7 +410,7 @@ export function flowModels(models: PageModel[], plan: FlowPlan): PageModel[] {
   // Where each source page's content ends up: (band, destination page, dy), own fixed draws excluded.
   const dest = new Map<number, { y0: number; y1: number; page: number; dy: number }[]>();
   plan.pages.forEach((pp, k) => {
-    for (const d of pp?.draws ?? []) dest.set(d.src, [...(dest.get(d.src) ?? []), { y0: d.y0, y1: d.y1, page: k, dy: d.dy }]);
+    for (const d of pp?.draws ?? []) if (!d.repeat) dest.set(d.src, [...(dest.get(d.src) ?? []), { y0: d.y0, y1: d.y1, page: k, dy: d.dy }]);
   });
   const whereIs = (src: number, s: Span) => {
     const mid = (s.y0 + s.y1) / 2;
@@ -404,7 +447,16 @@ export function flowModels(models: PageModel[], plan: FlowPlan): PageModel[] {
           bbox: { ...t.bbox, y1: Math.max(...rows.map((r) => r.y1)), y0: Math.min(...rows.map((r) => r.y0)) },
         };
         if (!whole && page !== src) delete piece.setup;
-        out[page]!.tables.push(shiftDeep(piece, dy));
+        const moved = shiftDeep(piece, dy);
+        const hr = headerRowsOf(t);
+        const rep = plan.pages[page]?.draws.find((d) => d.repeat === t.id);
+        if (rep && !keep.has(0)) {
+          const head = shiftDeep({ rows: t.rows.filter((r) => r.index < hr), cells: t.cells.filter((c) => c.row < hr) }, rep.dy);
+          moved.rows = [...head.rows, ...moved.rows];
+          moved.cells = [...head.cells, ...moved.cells];
+          moved.bbox = { ...moved.bbox, y1: Math.max(moved.bbox.y1, ...head.rows.map((r) => r.y1)) };
+        }
+        out[page]!.tables.push(moved);
       }
     }
   });

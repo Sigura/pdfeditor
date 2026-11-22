@@ -162,6 +162,13 @@ tables right below a table whose bottom edge changed; paths and images there get
   after the flow show moved boxes and table rows on the pages that draw them, under their ids, and a table
   cut by the flow appears on both pages. `flowIn` marks continued areas, and `added` marks pages created by
   the flow. Both are closed to new text and the Table tool.
+  A table cut by the flow (onto any page) is reported in `continuations` until a `tableContinuation`
+  op answers it; past the last page a trial flow onto empty pages finds the cut, so the new-page prompt
+  asks it too. With `repeatHeader`, every continued part starts with a band of the table's header rows
+  drawn from its page, and its rows move down by that height; the continuation's model gets the header
+  rows. A header/footer text box that reads like a page number ("Page 2", "2 of 5") is reported as the
+  `pageNumber` of a `needsPage` overflow; `setPageFlow.pageNumbers: 'omit'` removes its runs from the
+  copied bands. Scanned pages have no text, so the page-number question doesn't apply there.
 
 ## Background fill
 

@@ -49,7 +49,9 @@ function describe(op: EditOperation, name: string): string {
     case 'defineTable':
       return `Table setup ${op.vertices.length - 1}×${op.vertices[0]!.length - 1}${op.spans.length ? `, ${op.spans.length} merged` : ''}`;
     case 'setPageFlow':
-      return op.newPages === 'copy' ? 'New pages copy the header/footer' : 'New pages are empty';
+      return op.newPages === 'copy' ? `New pages copy the header/footer${op.pageNumbers === 'omit' ? ' (no page number)' : ''}` : 'New pages are empty';
+    case 'tableContinuation':
+      return op.repeatHeader ? 'Continued table repeats its header rows' : 'Continued table without header rows';
     case 'scanLayout':
       return `Scan layout of page ${op.pageIndex + 1} (${op.lines.length} lines)`;
     case 'resizeTable':

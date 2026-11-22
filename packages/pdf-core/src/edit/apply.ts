@@ -1,7 +1,7 @@
 import pdfLibFontkit from '@pdf-lib/fontkit';
 import { createHash } from 'node:crypto';
 import { PDFArray, PDFDict, PDFName, PDFStream, type PDFDocument, type PDFFont } from 'pdf-lib';
-import type { Color, EditOperation, Matrix, PageModel, PageOverflow, Rect, StrategyReport, TextBox } from '@pdf-toolkit/shared';
+import type { Color, EditOperation, EditResult, Matrix, PageModel, PageOverflow, Rect, StrategyReport, TextBox } from '@pdf-toolkit/shared';
 import { faceCovers, findFallback, findSubstitute, loadFace, parseFontName, type FontRequest, type LoadedFace } from '../fonts/lookup.ts';
 import type { BoxInternal } from '../model/group.ts';
 import { applyPatch, emptyPatch, serializeOp, type StreamPatch } from '../content/parser.ts';
@@ -16,6 +16,7 @@ import { tableDefinitions, reduceEdits, reflowBelow, type AddedBox } from './red
 import { backgroundFill, colorOp, num, shiftRect, translateIn, union } from './ops.ts';
 import { tableDrawer } from './tableDraw.ts';
 import { writeStoredTables } from '../model/pieceInfo.ts';
+import { headerRowsOf } from '../model/tablePattern.ts';
 import { flowModels, planFlow, writeFlow, type FlowPage, type FlowUnit } from './paging.ts';
 
 export type ApplyResult = {
@@ -26,7 +27,11 @@ export type ApplyResult = {
   pages: PageModel[];
   /** Pages whose content was pushed past the bottom edge (growing tables, moves), by how many points. */
   overflows: PageOverflow[];
+  continuations: EditResult['continuations'];
 };
+
+/** "Page 2", "2", "- 2 -", "2 of 5", "p. 2/5": text that a copied header/footer would repeat wrongly. */
+const PAGE_NUMBER = /^(?:(?:page|p\.|pg\.?|seite|página|pagina|стр\.?|страница)\s*)?[-–—]?\s*\d{1,4}\s*[-–—]?(?:\s*(?:of|von|de|из|\/)\s*\d{1,4})?$/i;
 
 /**
  * Replaces a show operator with one that has the same text-space advance and draws nothing, so
@@ -219,7 +224,9 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   const analyses = analyzeDocument(doc, tableDefinitions(ops));
   const pages: PageModel[] = analyses.map((a) => structuredClone(a.model));
   const state = reduceEdits(pages, ops);
-  const pageFlow = ops.reduce<'copy' | 'empty' | undefined>((m, op) => (op.type === 'setPageFlow' ? op.newPages : m), undefined);
+  const flowOp = ops.findLast((op) => op.type === 'setPageFlow');
+  const pageFlow = flowOp?.newPages;
+  const continuation = new Map(ops.flatMap((op) => (op.type === 'tableContinuation' ? [[op.tableId, op.repeatHeader] as const] : [])));
   const scanLayouts = new Map(ops.flatMap((op) => (op.type === 'scanLayout' ? [[op.pageIndex, op] as const] : [])));
   const reports: StrategyReport[] = [];
   const warnings: string[] = [];
@@ -474,11 +481,15 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
     const unit = (r: { y0: number; y1: number }, dy: number, extra: Partial<FlowUnit> = {}): FlowUnit => ({ ...span(r), orig: { y0: r.y0 - dy, y1: r.y1 - dy }, ...(Math.abs(dy) > 0.01 && { pushed: true }), ...extra });
     const origBoxes = new Map(a.model.textBoxes.map((b) => [b.id, b.bbox]));
     const origTables = new Map(a.model.tables.map((t) => [t.id, t.bbox]));
-    const units: FlowUnit[] = page.textBoxes.map((b) => (origBoxes.has(b.id) ? unit(b.bbox, reflowDy(origBoxes.get(b.id)!)) : span(b.bbox)));
+    const pageNumber = (b: TextBox) => (PAGE_NUMBER.test(b.text.trim()) ? { pageNumber: { text: b.text.trim(), x0: b.bbox.x0, x1: b.bbox.x1 } } : {});
+    const units: FlowUnit[] = page.textBoxes.map((b) => (origBoxes.has(b.id) ? unit(b.bbox, reflowDy(origBoxes.get(b.id)!), pageNumber(b)) : span(b.bbox)));
+    const headers: Record<string, { y0: number; y1: number }> = {};
     for (const t of page.tables) {
       const ob = origTables.get(t.id);
-      const rows = [...t.rows.map(span), ...t.cells.filter((c) => (c.rowSpan ?? 1) > 1).map((c) => span(c.bbox))];
-      for (const r of rows) units.push({ ...r, table: true, ...(ob && { orig: span(ob) }), ...((!ob || r.y0 < ob.y0 - 0.01 || reflowDy(ob)) && { pushed: true }) });
+      const rows = [...t.rows.map((r) => ({ ...span(r), row: r.index })), ...t.cells.filter((c) => (c.rowSpan ?? 1) > 1).map((c) => ({ ...span(c.bbox), row: c.row }))];
+      for (const r of rows) units.push({ ...r, table: true, tableId: t.id, ...(ob && { orig: span(ob) }), ...((!ob || r.y0 < ob.y0 - 0.01 || reflowDy(ob)) && { pushed: true }) });
+      const hr = headerRowsOf(t);
+      if (hr > 0 && t.rows.length > hr) headers[t.id] = { y0: t.rows[hr - 1]!.y0, y1: t.rows[0]!.y1 };
     }
     const tablePaths = new Set(a.tables.flatMap((t) => t.paths));
     const cellImages = new Set(a.tables.flatMap((t) => [...t.cellImages.values()].flat()));
@@ -499,13 +510,15 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
       const dy = reflowDy(l);
       units.push(unit({ y0: l.y0 + dy, y1: l.y1 + dy }, dy));
     }
-    return { view: page.view, units, ...(layout && { paper: layout.paper }) };
+    return { view: page.view, units, headers, ...(layout && { paper: layout.paper }) };
   });
-  const plan = planFlow(flowPages, pageFlow);
+  const flowOpts = { repeat: new Set([...continuation].flatMap(([id, yes]) => (yes ? [id] : []))), pageNumbers: flowOp?.pageNumbers };
+  const plan = planFlow(flowPages, pageFlow, flowOpts);
   const involved = (k: number) => plan.pages[k] !== undefined || reflows.some((rf) => rf.pageIndex === k);
   const unmeasured = analyses.filter((a) => !a.model.editable && !scanLayouts.has(a.pageIndex));
   const firstUnmeasured = unmeasured.find((a) => involved(a.pageIndex));
   const overflows: PageOverflow[] = [];
+  const continuations: EditResult['continuations'] = [];
   let outPages = pages;
   if (firstUnmeasured) {
     const needsLayout = unmeasured.filter((a) => a.pageIndex >= firstUnmeasured.pageIndex).map((a) => a.pageIndex);
@@ -516,6 +529,9 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
       overflows.push({ ...plan.overflow, needsPage: true });
       warnings.push(`Content on page ${plan.overflow.pageIndex + 1} extends ${plan.overflow.by.toFixed(1)} pt past the bottom of the body area`);
     }
+    // Cut tables with header rows ask whether to repeat them; past the last page, a trial flow onto new pages finds them.
+    const splits = plan.overflow ? planFlow(flowPages, 'empty', flowOpts).splits : plan.splits;
+    for (const s of splits) if (!continuation.has(s.tableId) && flowPages.some((p) => p.headers?.[s.tableId])) continuations.push(s);
     if (plan.pages.some(Boolean)) {
       writeFlow(doc, plan);
       outPages = flowModels(pages, plan);
@@ -524,5 +540,5 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   await doc.flush();
   fonts.finalize();
   const bytes = snapshot ? writeIncremental(original, doc.context, snapshot) : await doc.save({ useObjectStreams: false });
-  return { bytes, reports, warnings, pages: outPages, overflows };
+  return { bytes, reports, warnings, pages: outPages, overflows, continuations };
 }

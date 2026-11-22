@@ -29,7 +29,8 @@ export type NewTextStyle = { fontFamily: string; fontSize: number };
  * Cancel takes them back), or a column insert that would leave the page (shrink the others or cancel).
  */
 export type Prompt =
-  | { kind: 'newPage'; pageIndex: number; by: number; count: number }
+  | { kind: 'newPage'; pageIndex: number; by: number; count: number; pageNumber?: string; tableIds: string[] }
+  | { kind: 'continuation'; pageIndex: number; tableIds: string[] }
   | { kind: 'colFit'; by: number; op: Extract<EditOperation, { type: 'tableInsertCol' }> };
 export type Activity = { id: number; label: string; since: number };
 let activityId = 0;
@@ -65,6 +66,8 @@ export type EditorState = {
   reports: StrategyReport[];
   warnings: string[];
   overflows: PageOverflow[];
+  /** Cut tables with header rows still waiting for a tableContinuation answer. */
+  continuations: EditResult['continuations'];
   prompt: Prompt | null;
   busy: boolean;
   /** Running operations, oldest first; the editor shows the latest once it has run 1.5 s. */
@@ -128,6 +131,7 @@ const initial = {
   reports: [],
   warnings: [],
   overflows: [] as PageOverflow[],
+  continuations: [] as EditResult['continuations'],
   prompt: null as Prompt | null,
   activities: [] as Activity[],
   busy: false,
@@ -203,7 +207,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   hover: (hoveredId) => set({ hoveredId }),
   select: (selectedId) => set((s) => ({ selectedId, editingId: s.editingId === selectedId ? s.editingId : null, cell: null, editingCell: null })),
   startEditing: (editingId) => set({ editingId, selectedId: editingId, cell: null, editingCell: null }),
-  applyResult: (r) => set({ revision: r.revision, ops: r.ops, reports: r.reports, warnings: r.warnings, overflows: r.overflows, pages: r.pages, editingId: null, editingCell: null }),
+  applyResult: (r) => set({ revision: r.revision, ops: r.ops, reports: r.reports, warnings: r.warnings, overflows: r.overflows, continuations: r.continuations, pages: r.pages, editingId: null, editingCell: null }),
   setBusy: (busy) => set({ busy }),
   setError: (error) => set({ error }),
   toggleChanges: () => set((s) => ({ showChanges: !s.showChanges })),
@@ -236,7 +240,10 @@ export const useEditor = create<EditorState>((set, get) => ({
       }
       // Content newly pushed past the last page: ask how to continue (new page copying the header/footer, empty, or cancel).
       const worse = get().overflows.find((o) => o.needsPage && o.by > (before.find((b) => b.pageIndex === o.pageIndex)?.by ?? 0) + 0.05);
-      if (worse) set({ prompt: { kind: 'newPage', pageIndex: worse.pageIndex, by: worse.by, count } });
+      const tableIds = get().continuations.map((c) => c.tableId);
+      if (worse) set({ prompt: { kind: 'newPage', pageIndex: worse.pageIndex, by: worse.by, count, ...(worse.pageNumber && { pageNumber: worse.pageNumber }), tableIds } });
+      // A table cut onto an existing page: ask whether its header rows repeat there.
+      else if (tableIds.length) set({ prompt: { kind: 'continuation', pageIndex: get().continuations[0]!.pageIndex, tableIds } });
       then?.();
     }
   },

@@ -90,9 +90,12 @@ export const ResizeTableOp = z.object({
 /**
  * How the flow continues past the last page: new pages copy the previous page's header/footer bands
  * ('copy') or stay blank ('empty'). Without it, content past the last page's body bottom is reported
- * as an overflow with `needsPage`.
+ * as an overflow with `needsPage`. `pageNumbers`: a copied header/footer text that looks like a page
+ * number ("Page 2", "2 of 5") is kept verbatim or left out (default keep).
  */
-export const SetPageFlowOp = z.object({ type: z.literal('setPageFlow'), newPages: z.enum(['copy', 'empty']) });
+export const SetPageFlowOp = z.object({ type: z.literal('setPageFlow'), newPages: z.enum(['copy', 'empty']), pageNumbers: z.enum(['keep', 'omit']).optional() });
+/** Whether a table cut by the page flow repeats its header rows at the top of each continued part. */
+export const TableContinuationOp = z.object({ type: z.literal('tableContinuation'), tableId: id, repeatHeader: z.boolean() });
 /**
  * Ink layout of a scanned page measured in the browser (original-page coordinates): `lines` are the
  * y ranges with ink outside tables, top first; `paper` the background colour. The flow cuts and keeps
@@ -120,6 +123,7 @@ export const EditOperationSchema = z.discriminatedUnion('type', [
   SetTextStyleOp,
   SetPageFlowOp,
   ScanLayoutOp,
+  TableContinuationOp,
 ]);
 export type EditOperation = z.infer<typeof EditOperationSchema>;
 

@@ -388,25 +388,46 @@ test('ink measurement on real glyphs: the font size estimate is right with and w
   for (const b of Object.values(boxes)) expect(Math.abs(inkFontSize(b) - 11)).toBeLessThanOrEqual(0.55);
 });
 
-test('paging: rows pushed past the last page ask how to continue; Copy header/footer adds a page; slow requests show progress', async ({ page }) => {
+test('paging: a cut table asks about its header rows; rows pushed past the last page ask how to continue and about the page number; Copy header/footer adds a page; slow requests show progress', async ({ page }) => {
   await open(page, 'paged-table.pdf');
   const thumbs = page.locator('img[alt^="Page "]');
   await expect(thumbs).toHaveCount(2);
   const cells = page.getByTestId('table-cell');
   await cells.nth(12).click();
-  // Rows first flow onto page 2 without asking; the prompt comes once page 2 runs out too.
+  // Rows first flow onto page 2, which asks once whether the header rows repeat there.
+  for (let i = 0; i < 40 && !(await page.getByTestId('prompt').count()); i++) {
+    const n = await changes(page).count();
+    await page.getByTitle('Insert row below').click();
+    await expect(changes(page)).toHaveCount(n + 1);
+  }
+  await expect(page.getByTestId('prompt')).toContainText('A table continues on page 2. Repeat header rows');
+  const yes = page.waitForResponse((r) => r.url().endsWith('/edits') && r.request().postDataJSON().ops[0]?.type === 'tableContinuation');
+  await page.getByTestId('prompt-yes').click();
+  const answered = await yes;
+  expect(answered.request().postDataJSON().ops).toEqual([expect.objectContaining({ type: 'tableContinuation', repeatHeader: true })]);
+  await expect(page.getByTestId('prompt')).toHaveCount(0);
+  // The continued part on page 2 starts with the header row.
+  const part = (await answered.json()).pages[1].tables[0];
+  expect(part.cells.find((c: { row: number; col: number }) => c.row === 0 && c.col === 0).text).toBe('Item');
+  await cells.nth(12).click();
+  // The new-page prompt comes once page 2 runs out too; the table was answered for, the copied footer's page number is asked about.
   for (let i = 0; i < 40 && !(await page.getByTestId('prompt').count()); i++) {
     const n = await changes(page).count();
     await page.getByTitle('Insert row below').click();
     await expect(changes(page)).toHaveCount(n + 1);
   }
   await expect(page.getByTestId('prompt')).toContainText('past the bottom of the last page (2)');
+  await expect(page.getByTestId('prompt-repeat-yes')).toHaveCount(0);
+  await expect(page.getByTestId('prompt')).toContainText('“Page 2”');
+  await expect(page.getByTestId('prompt-number-omit')).toBeChecked();
   const before = await changes(page).count();
   await page.route('**/api/documents/*/edits', async (route) => {
     await new Promise((r) => setTimeout(r, 2000));
     await route.continue();
   });
+  const flowReq = page.waitForRequest((r) => r.url().endsWith('/edits') && r.postDataJSON().ops[0]?.type === 'setPageFlow');
   await page.getByTestId('prompt-copy').click();
+  expect((await flowReq).postDataJSON().ops).toEqual([{ type: 'setPageFlow', newPages: 'copy', pageNumbers: 'omit' }]);
   await expect(page.getByTestId('progress')).toContainText('Applying changes…');
   await expect(thumbs).toHaveCount(3);
   await expect(page.getByTestId('progress')).toHaveCount(0);
@@ -443,11 +464,18 @@ test('paging on a scan: the layout is measured in the browser, sent with the cha
   const near = (y0: number, y1: number) => op.lines.some((l: { y0: number; y1: number }) => Math.abs(l.y0 - y0) < 1 && Math.abs(l.y1 - y1) < 1);
   expect(near(798, 808) && near(28, 38) && near(740, 748) && near(100, 108)).toBe(true);
   await expect(changes(page)).toHaveCount(3);
-  for (let i = 0; i < 12 && !(await page.getByTestId('prompt').count()); i++) {
-    const n = await changes(page).count();
-    await page.getByTitle('Insert row below').click();
-    await expect(changes(page)).toHaveCount(n + 1);
-  }
+  // A taller row 2 pushes the rows under it past the page: the table is cut, onto a new page.
+  await page.getByTestId('table-cell').nth(4).click();
+  await page.getByTestId('insp-row-height').fill('150');
+  await page.getByTestId('insp-row-height').press('Enter');
+  await expect(page.getByTestId('prompt')).toContainText('past the bottom of the last page (1)');
+  // The first cut of the table is onto the new page: the new-page prompt asks about its header rows too; a scan has no page-number text to ask about.
+  await expect(page.getByTestId('prompt-repeat-yes')).toBeChecked();
+  await expect(page.getByTestId('prompt-number-keep')).toHaveCount(0);
+  await page.getByTestId('prompt-repeat-no').click();
+  const flowReq = page.waitForRequest((r) => r.url().endsWith('/edits') && r.postDataJSON().ops[0]?.type === 'setPageFlow');
   await page.getByTestId('prompt-copy').click();
+  expect((await flowReq).postDataJSON().ops).toEqual([{ type: 'setPageFlow', newPages: 'copy' }, expect.objectContaining({ type: 'tableContinuation', repeatHeader: false })]);
   await expect(page.locator('img[alt^="Page "]')).toHaveCount(2);
+  await expect(page.getByTestId('prompt')).toHaveCount(0);
 });
