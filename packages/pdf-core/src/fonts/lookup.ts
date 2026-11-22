@@ -198,6 +198,27 @@ function codeRanges(codePoints: number[]): Uint32Array {
   return Uint32Array.from(out);
 }
 
+type LazyGroups = { length: number; base: number; stream: { buffer: Uint8Array } };
+
+/**
+ * cmap coverage. For format 12/13 (all CJK fonts) the groups are read straight from the font bytes: fontkit's
+ * characterSet decodes each group into an object first, ~65 ms for the ~15k groups of a Noto CJK face.
+ */
+function coverage(f: fontkit.Font): Uint32Array {
+  const cmap = (f as unknown as { _cmapProcessor: { cmap: { version: number; groups?: LazyGroups } } })._cmapProcessor.cmap;
+  if ((cmap.version !== 12 && cmap.version !== 13) || !cmap.groups) return codeRanges(f.characterSet);
+  const { length, base, stream } = cmap.groups;
+  const v = new DataView(stream.buffer.buffer, stream.buffer.byteOffset, stream.buffer.byteLength);
+  const groups = Array.from({ length }, (_, i) => [v.getUint32(base + 12 * i), v.getUint32(base + 12 * i + 4)] as const);
+  groups.sort((a, b) => a[0] - b[0]);
+  const out: number[] = [];
+  for (const [start, end] of groups) {
+    if (out.length && out[out.length - 1]! >= start - 1) out[out.length - 1] = Math.max(out[out.length - 1]!, end);
+    else out.push(start, end);
+  }
+  return Uint32Array.from(out);
+}
+
 function describe(f: fontkit.Font, file: string, source: FontFace['source'], face?: number): FontFace {
   const os2 = (f as unknown as { 'OS/2'?: Os2 })['OS/2'];
   const sub = f.subfamilyName ?? '';
@@ -215,7 +236,7 @@ function describe(f: fontkit.Font, file: string, source: FontFace['source'], fac
     bold: (os2?.usWeightClass ?? 400) >= 600 || !!os2?.fsSelection?.bold || /bold|black|heavy/i.test(sub),
     italic: !!os2?.fsSelection?.italic || f.italicAngle !== 0 || /italic|oblique/i.test(sub),
     ...classify(f),
-    coverage: codeRanges(f.characterSet),
+    coverage: coverage(f),
   };
 }
 
