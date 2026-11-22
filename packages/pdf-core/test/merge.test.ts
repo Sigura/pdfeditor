@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFRawStream, PDFTextField, decodePDFRawStream } from 'pdf-lib';
-import { mergePdfs } from '../src/merge.ts';
+import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFNumber, type PDFObject, PDFRawStream, type PDFRef, PDFTextField, decodePDFRawStream } from 'pdf-lib';
+import { arrangePdf, mergePdfs } from '../src/merge.ts';
 import { addInternalLink, encryptRc4, makePdf } from './helpers.ts';
 
 describe('mergePdfs', () => {
@@ -94,5 +94,44 @@ describe('mergePdfs', () => {
       const text = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1');
       expect(text).toMatch(/BT[\s\S]*Tj[\s\S]*ET/);
     }
+  });
+});
+
+describe('arrangePdf', () => {
+  it('unlinks outline items that point to removed pages, keeping their children and the open state', async () => {
+    const doc = await makePdf(4, 'A');
+    const ctx = doc.context;
+    const [p0, p1, p2] = doc.getPages().map((p) => p.ref);
+    const refs = Array.from({ length: 6 }, () => ctx.nextRef());
+    const [root, part, kid0, kid1, gone, named] = refs as [PDFRef, PDFRef, PDFRef, PDFRef, PDFRef, PDFRef];
+    const item = (title: string, extra: Record<string, unknown>) => ctx.obj({ Title: PDFHexString.fromText(title), ...extra });
+    ctx.assign(root, ctx.obj({ Type: 'Outlines', First: part, Last: named, Count: 5 }));
+    ctx.assign(part, item('Part', { Parent: root, Next: gone, First: kid0, Last: kid1, Count: 2, Dest: [p1, 'Fit'] }));
+    ctx.assign(kid0, item('Kid 0', { Parent: part, Next: kid1, Dest: [p0, 'Fit'] }));
+    ctx.assign(kid1, item('Kid 1', { Parent: part, Prev: kid0, A: { S: 'GoTo', D: [p1, 'XYZ', 0, 700, 0] } }));
+    ctx.assign(gone, item('Page 3', { Parent: root, Prev: part, Next: named, Dest: [p2, 'Fit'] }));
+    ctx.assign(named, item('Named', { Parent: root, Prev: gone, Dest: PDFName.of('there') }));
+    doc.catalog.set(PDFName.of('Dests'), ctx.obj({ there: [p1, 'Fit'] }));
+    doc.catalog.set(PDFName.of('Outlines'), root);
+
+    const out = await PDFDocument.load(await arrangePdf(await doc.save({ useObjectStreams: false }), [{ page: 2 }, { page: 0 }, { page: 3 }]));
+    const outlines = out.catalog.lookup(PDFName.of('Outlines'), PDFDict);
+    const titles = (first: PDFObject | undefined): unknown[] => {
+      const res: unknown[] = [];
+      for (let cur = out.context.lookup(first); cur instanceof PDFDict; cur = out.context.lookup(cur.get(PDFName.of('Next')))) {
+        const kids = titles(cur.get(PDFName.of('First')));
+        const title = (cur.lookup(PDFName.of('Title')) as PDFHexString).decodeText();
+        res.push(kids.length ? { [title]: kids, count: cur.lookup(PDFName.of('Count'), PDFNumber).asNumber() } : title);
+      }
+      return res;
+    };
+    expect(titles(outlines.get(PDFName.of('First')))).toEqual([{ Part: ['Kid 0'], count: 1 }, 'Page 3']);
+    expect(outlines.lookup(PDFName.of('Count'), PDFNumber).asNumber()).toBe(3);
+    const partOut = outlines.lookup(PDFName.of('First'), PDFDict);
+    expect(partOut.has(PDFName.of('Dest'))).toBe(false);
+    expect(out.context.lookup(outlines.get(PDFName.of('Last')))).toBe(out.context.lookup(partOut.get(PDFName.of('Next'))));
+    const pageOut = out.context.lookup(outlines.get(PDFName.of('Last'))) as PDFDict;
+    expect(pageOut.has(PDFName.of('Next'))).toBe(false);
+    expect(pageOut.lookup(PDFName.of('Dest'), PDFArray).get(0)).toBe(out.getPage(0).ref);
   });
 });

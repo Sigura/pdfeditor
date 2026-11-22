@@ -67,6 +67,8 @@ export async function arrangePdf(bytes: Uint8Array, order: { page: number; rotat
   const tree = doc.catalog.Pages();
   tree.set(N('Kids'), doc.context.obj(refs));
   tree.set(N('Count'), PDFNumber.of(refs.length));
+  const kept = new Set(refs);
+  pruneOutline(doc, new Set(pages.map((p) => p.ref).filter((r) => !kept.has(r))));
   return snapshot ? writeIncremental(bytes, doc.context, snapshot) : doc.save({ useObjectStreams: false });
 }
 
@@ -388,6 +390,80 @@ function readOutline(
     return nodes;
   };
   return walk(root.get(N('First')), 0);
+}
+
+/**
+ * Unlinks, in place, outline items whose destination is one of `removed`. An item that still has children
+ * keeps them and loses only its destination. Open/closed state is kept; the counts are recomputed.
+ */
+function pruneOutline(doc: PDFDocument, removed: Set<PDFRef>): void {
+  const root = doc.catalog.lookupMaybe(N('Outlines'), PDFDict);
+  if (!root || removed.size === 0) return;
+  const resolve = makeDestResolver(doc);
+  const ctx = doc.context;
+  const children = (parent: PDFDict, seen: Set<PDFDict>): [PDFRef, PDFDict][] => {
+    const out: [PDFRef, PDFDict][] = [];
+    let ref = parent.get(N('First'));
+    while (ref instanceof PDFRef && out.length < 100_000) {
+      const item = ctx.lookup(ref);
+      if (!(item instanceof PDFDict) || seen.has(item)) break;
+      seen.add(item);
+      out.push([ref, item]);
+      ref = item.get(N('Next'));
+    }
+    return out;
+  };
+  const goTo = (item: PDFDict): boolean => {
+    const a = item.lookup(N('A'));
+    return a instanceof PDFDict && a.lookup(N('S')) === N('GoTo');
+  };
+  const dangles = (item: PDFDict): boolean => {
+    const action = item.lookup(N('A'));
+    const dest = resolve(item.get(N('Dest'))) ?? (goTo(item) ? resolve((action as PDFDict).get(N('D'))) : null);
+    const target = dest?.get(0);
+    return target instanceof PDFRef && removed.has(target);
+  };
+  const anyDangles = (parent: PDFDict, seen: Set<PDFDict>): boolean =>
+    children(parent, seen).some(([, item]) => dangles(item) || anyDangles(item, seen));
+  if (!anyDangles(root, new Set())) return;
+  const seen = new Set<PDFDict>();
+  // Returns the number of items shown below `parent` when it is open.
+  const prune = (parent: PDFDict): number => {
+    const keep: [PDFRef, PDFDict][] = [];
+    let shown = 0;
+    for (const [ref, item] of children(parent, seen)) {
+      const below = prune(item);
+      const hasKids = item.get(N('First')) instanceof PDFRef;
+      if (dangles(item)) {
+        if (!hasKids) continue;
+        item.delete(N('Dest'));
+        if (goTo(item)) item.delete(N('A'));
+      }
+      keep.push([ref, item]);
+      if (hasKids) {
+        const open = (item.lookupMaybe(N('Count'), PDFNumber)?.asNumber() ?? 0) > 0;
+        item.set(N('Count'), PDFNumber.of(open ? below : -below));
+        shown += open ? below : 0;
+      }
+      shown += 1;
+    }
+    keep.forEach(([, item], i) => {
+      if (i > 0) item.set(N('Prev'), keep[i - 1]![0]);
+      else item.delete(N('Prev'));
+      if (i < keep.length - 1) item.set(N('Next'), keep[i + 1]![0]);
+      else item.delete(N('Next'));
+    });
+    if (keep.length) {
+      parent.set(N('First'), keep[0]![0]);
+      parent.set(N('Last'), keep[keep.length - 1]![0]);
+    } else {
+      parent.delete(N('First'));
+      parent.delete(N('Last'));
+      parent.delete(N('Count'));
+    }
+    return shown;
+  };
+  root.set(N('Count'), PDFNumber.of(prune(root)));
 }
 
 function writeOutline(doc: PDFDocument, top: OutlineNode[]): void {

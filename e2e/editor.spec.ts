@@ -160,6 +160,14 @@ test('duplicate page: the copy is edited on its own in the editor; Merge repeats
   expect(await text(2)).not.toContain('Quarterly Report');
   await doc.destroy();
 
+  // Undoing the duplicate alone would leave the edit on the copy without a page: it asks to undo both.
+  await changes(page).nth(0).getByTestId('change-undo').click();
+  await expect(page.getByTestId('confirm-dialog')).toContainText('change 2');
+  await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
+  await expect(changes(page)).toHaveCount(0);
+  await expect.poll(order).toEqual([0, 1]);
+  await expect(page.getByTestId('editor-error')).toHaveCount(0);
+
   await page.getByRole('button', { name: 'Merge & Pages', exact: true }).click();
   await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
   const items = page.getByTestId('merge-page');
