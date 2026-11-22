@@ -1,7 +1,7 @@
 export { PdfError, type PdfErrorCode } from './errors.ts';
 export { parsePageRanges } from './ranges.ts';
 export { loadPdf, type LoadedPdf } from './load.ts';
-export { mergePdfs, type MergeInput } from './merge.ts';
+export { mergePdfs, type BlankPage, type MergeInput } from './merge.ts';
 export { parseContent, applyPatch, serializeOp, type ContentOp, type Operand, type ParsedContent } from './content/parser.ts';
 export { PdfFont, stripSubsetPrefix, standard14Name } from './fonts/pdfFont.ts';
 export { analyzeDocument, analyzePage, type PageAnalysis } from './model/extract.ts';

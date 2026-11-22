@@ -1,9 +1,9 @@
-import { useRef, useState, type DragEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import { apiError, downloadBlob } from '../lib/api.ts';
 import { askPassword } from '../lib/Dialogs.tsx';
 import { Thumbnail } from './Thumbnail.tsx';
-import { toSegments, useMergeStore } from './store.ts';
+import { BLANK, toSegments, useMergeStore } from './store.ts';
 
 const COLORS = ['bg-sky-500', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500', 'bg-violet-500', 'bg-lime-500'];
 
@@ -27,13 +27,14 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
   }
 }
 
-export function MergeView() {
-  const { files, pages, busy, error, addFile, movePage, removePage, removeFile, clear, setBusy, setError } = useMergeStore();
+export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
+  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, removeFile, clear, setBusy, setError } = useMergeStore();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileIds = Object.keys(files);
+  const hasPages = pages.some((p) => p.fileId !== BLANK);
 
   const addFiles = async (list: FileList | File[]) => {
     setError(null);
@@ -52,13 +53,21 @@ export function MergeView() {
     }
   };
 
+  useEffect(() => {
+    // Read from the store, not the render: StrictMode runs the effect twice with the same render.
+    const list = useMergeStore.getState().incoming;
+    if (!list.length) return;
+    useMergeStore.getState().setIncoming([]);
+    void addFiles(list);
+  }, []);
+
   const onFileDrop = (e: DragEvent) => {
     e.preventDefault();
     setDropActive(false);
     if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
   };
 
-  const merge = async () => {
+  const merge = async (then: (blob: Blob) => void) => {
     setBusy(true);
     setError(null);
     try {
@@ -72,7 +81,7 @@ export function MergeView() {
       form.append('passwords', JSON.stringify(used.map((id) => files[id]!.password ?? '')));
       const res = await fetch('/api/merge', { method: 'POST', body: form });
       if (!res.ok) throw await apiError(res);
-      downloadBlob(await res.blob(), 'merged.pdf');
+      then(await res.blob());
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -110,10 +119,19 @@ export function MergeView() {
         />
         <button
           className="rounded bg-emerald-600 px-3 py-1.5 text-sm text-white disabled:opacity-40"
-          disabled={pages.length === 0 || busy}
-          onClick={() => void merge()}
+          disabled={!hasPages || busy}
+          onClick={() => void merge((b) => downloadBlob(b, 'merged.pdf'))}
         >
           {busy ? 'Merging…' : `Merge & download (${pages.length} pages)`}
+        </button>
+        <button
+          data-testid="merge-edit"
+          className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+          title="Merge, then open the result in the editor"
+          disabled={!hasPages || busy}
+          onClick={() => void merge((b) => onEdit(new File([b], 'merged.pdf', { type: 'application/pdf' })))}
+        >
+          Edit result
         </button>
         <button className="rounded px-3 py-1.5 text-sm hover:bg-slate-100" onClick={clear} disabled={busy}>
           Clear
@@ -133,12 +151,12 @@ export function MergeView() {
       {error && <div className="bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
       <div className={`min-h-0 flex-1 overflow-auto p-6 ${dropActive ? 'bg-sky-50 outline-2 outline-dashed outline-sky-400' : ''}`}>
         {pages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-slate-500">Drop PDF files here or click “Add PDFs”.</div>
+          <div className="flex h-full items-center justify-center text-slate-500">Drop PDF files here or click “Add PDFs”. Then reorder, rotate, delete or insert blank pages.</div>
         ) : (
           <ol className="flex flex-wrap gap-5">
             {pages.map((p, i) => {
-              const file = files[p.fileId]!;
-              const color = COLORS[fileIds.indexOf(p.fileId) % COLORS.length];
+              const file = files[p.fileId];
+              const color = file ? COLORS[fileIds.indexOf(p.fileId) % COLORS.length] : 'bg-slate-300';
               return (
                 <li
                   key={p.key}
@@ -169,19 +187,32 @@ export function MergeView() {
                   }}
                   className={`group relative cursor-grab rounded p-1 ${overIndex === i && dragIndex !== i ? 'ring-2 ring-sky-500' : ''} ${dragIndex === i ? 'opacity-40' : ''}`}
                 >
-                  <Thumbnail file={file} pageIndex={p.pageIndex} />
+                  {file ? (
+                    <Thumbnail file={file} pageIndex={p.pageIndex} rotate={p.rotate} />
+                  ) : (
+                    <div data-testid="blank-page" className="flex h-[198px] w-[140px] items-center justify-center bg-white text-xs text-slate-400 shadow">
+                      Blank page
+                    </div>
+                  )}
                   <div className="mt-1 flex items-center gap-1 text-xs text-slate-600">
                     <span className={`h-2 w-2 rounded-full ${color}`} />
-                    <span className="max-w-[110px] truncate">{file.name}</span>
-                    <span className="ml-auto">p.{p.pageIndex + 1}</span>
+                    <span className="max-w-[110px] truncate">{file ? file.name : 'Blank'}</span>
+                    {file && <span className="ml-auto">p.{p.pageIndex + 1}</span>}
                   </div>
-                  <button
-                    title="Remove page"
-                    className="absolute top-2 right-2 hidden h-6 w-6 rounded-full bg-white/90 text-sm shadow group-hover:block hover:text-red-600"
-                    onClick={() => removePage(p.key)}
-                  >
-                    ×
-                  </button>
+                  <div className="absolute top-2 right-2 hidden gap-1 group-hover:flex group-focus-within:flex">
+                    {file && (
+                      <button data-testid="page-rotate" title="Rotate 90° clockwise" aria-label="Rotate page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => rotatePage(p.key)}>
+                        ↻
+                      </button>
+                    )}
+                    <button data-testid="page-blank" title="Insert a blank page after this one" aria-label="Insert blank page after" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => insertBlank(i)}>
+                      +
+                    </button>
+                    <button title="Remove page" aria-label="Remove page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
+                      ×
+                    </button>
+                  </div>
+                  {p.rotate > 0 && <span className="absolute top-2 left-2 rounded bg-sky-600 px-1 text-[10px] text-white">↻ {p.rotate}°</span>}
                 </li>
               );
             })}

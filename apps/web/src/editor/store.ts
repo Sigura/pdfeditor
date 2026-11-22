@@ -87,6 +87,9 @@ export type EditorState = {
   tableSetup: SetupDraft | null;
   /** Bumped after each page render, so pixel-based colour detection re-reads the canvas. */
   renderCount: number;
+  /** A file handed over from another tab (Merge's "Edit result"), opened by the editor when it mounts. */
+  incoming: File | null;
+  setIncoming: (f: File | null) => void;
   setDocument: (d: { docId: string; fileName: string; pages: PageModel[] }) => void;
   setPage: (i: number) => void;
   setZoom: (z: number) => void;
@@ -150,6 +153,7 @@ const initial = {
   nudge: null,
   tableSetup: null,
   renderCount: 0,
+  incoming: null as File | null,
 };
 
 let nudgeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -274,6 +278,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
   setDownloaded: (downloadedRevision) => set({ downloadedRevision }),
+  setIncoming: (incoming) => set({ incoming }),
   setPrompt: (prompt) => set({ prompt }),
   revert: async (count) => {
     set({ prompt: null });

@@ -10,10 +10,12 @@ export function openPdf(data: Uint8Array) {
 
 export type PdfDoc = Awaited<ReturnType<typeof openPdf>>;
 
-export async function renderThumbnail(doc: PdfDoc, pageNumber: number, width: number): Promise<string> {
+/** `rotate`: degrees added to the page's own rotation. */
+export async function renderThumbnail(doc: PdfDoc, pageNumber: number, width: number, rotate = 0): Promise<string> {
   const page = await doc.getPage(pageNumber);
-  const base = page.getViewport({ scale: 1 });
-  const viewport = page.getViewport({ scale: width / base.width });
+  const rotation = (page.rotate + rotate) % 360;
+  const base = page.getViewport({ scale: 1, rotation });
+  const viewport = page.getViewport({ scale: width / base.width, rotation });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);

@@ -9,8 +9,10 @@ import {
   PDFNumber,
   PDFObject,
   PDFObjectCopier,
+  PDFPage,
   PDFRef,
   PDFString,
+  degrees,
 } from 'pdf-lib';
 import { parsePageRanges } from './ranges.ts';
 import { loadPdf } from './load.ts';
@@ -23,14 +25,19 @@ export type MergeInput = {
   password?: string;
   /** Title of the top-level bookmark for this file. */
   name?: string;
+  /** Degrees (a multiple of 90) added to each copied page's rotation. */
+  rotate?: number;
 };
+/** An empty page the size of the page before it as shown (the page after it when it comes first; A4 if there is none). */
+export type BlankPage = { blank: true };
+const A4: [number, number] = [595.28, 841.89];
 
 const PLACEHOLDER = 'PdfToolkitSrcPage';
 const N = (s: string) => PDFName.of(s);
 
 type OutlineNode = { title: PDFObject; dest: PDFArray | null; color?: PDFObject; flags?: PDFObject; children: OutlineNode[] };
 
-export async function mergePdfs(inputs: MergeInput[]): Promise<Uint8Array> {
+export async function mergePdfs(inputs: (MergeInput | BlankPage)[]): Promise<Uint8Array> {
   if (inputs.length === 0) throw new PdfError('INVALID_RANGE', 'No input files');
   const out = await PDFDocument.create({ updateMetadata: false });
   out.setProducer('pdf-toolkit');
@@ -41,7 +48,18 @@ export async function mergePdfs(inputs: MergeInput[]): Promise<Uint8Array> {
   let acroDa: PDFObject | undefined;
   let needAppearances = false;
 
+  const shownSize = (page: PDFPage): [number, number] => {
+    const { width, height } = page.getSize();
+    return page.getRotation().angle % 180 ? [height, width] : [width, height];
+  };
+  let leadingBlanks = 0;
   for (const [fileIndex, input] of inputs.entries()) {
+    if ('blank' in input) {
+      const last = out.getPageCount() ? out.getPage(out.getPageCount() - 1) : null;
+      if (last) out.addPage(shownSize(last));
+      else leadingBlanks++;
+      continue;
+    }
     let src: PDFDocument;
     try {
       ({ doc: src } = await loadPdf(input.file, { password: input.password }));
@@ -68,6 +86,7 @@ export async function mergePdfs(inputs: MergeInput[]): Promise<Uint8Array> {
     const copied = await out.copyPages(src, indices);
     const firstOutputRef = new Map<number, PDFRef>();
     copied.forEach((page, k) => {
+      if (input.rotate) page.setRotation(degrees((((page.getRotation().angle + input.rotate) % 360) + 360) % 360));
       out.addPage(page);
       const srcIdx = indices[k]!;
       if (!firstOutputRef.has(srcIdx)) firstOutputRef.set(srcIdx, page.ref);
@@ -113,6 +132,9 @@ export async function mergePdfs(inputs: MergeInput[]): Promise<Uint8Array> {
       children,
     });
   }
+
+  const size = out.getPageCount() ? shownSize(out.getPage(0)) : A4;
+  for (let i = 0; i < leadingBlanks; i++) out.insertPage(0, size);
 
   if (fieldRoots.length > 0) {
     const acro = out.context.obj({ Fields: out.context.obj(fieldRoots) });

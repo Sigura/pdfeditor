@@ -37,6 +37,35 @@ test('download right after a nudge includes the move', async ({ page }) => {
   expect(edited.find((i) => i.str === 'Quarterly Report')!.x).toBeCloseTo(before.x + 3, 3);
 });
 
+test('arrange pages of an edited PDF, then edit the result', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  await page.getByTestId('text-box').first().click();
+  await page.keyboard.press('Delete');
+  await expect(changes(page)).toHaveCount(1);
+
+  await page.getByTestId('arrange-pages').click();
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(2);
+  await items.nth(0).hover();
+  await items.nth(0).getByTestId('page-rotate').click();
+  await items.nth(0).getByTestId('page-blank').click();
+  await expect(items).toHaveCount(3);
+  await expect(items.nth(1).getByTestId('blank-page')).toBeVisible();
+
+  // The editor still holds undownloaded edits, so opening the result asks first.
+  await page.getByTestId('merge-edit').click();
+  await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
+  await expect(page.locator('aside button')).toHaveCount(3);
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  expect(doc.numPages).toBe(3);
+  expect((await doc.getPage(1)).rotate).toBe(90);
+  expect((await (await doc.getPage(2)).getTextContent()).items).toHaveLength(0);
+  const text = (await (await doc.getPage(1)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');
+  expect(text).not.toContain('Quarterly Report');
+  await doc.destroy();
+});
+
 test('edit text, nudge, restyle, undo one change and download', async ({ page }) => {
   await open(page, 'latin-standard14.pdf');
   const box = page.getByTestId('text-box').first();

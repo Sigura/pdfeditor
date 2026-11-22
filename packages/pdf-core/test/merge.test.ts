@@ -22,6 +22,19 @@ describe('mergePdfs', () => {
     expect(dest.get(0)).toBe(out.getPage(0).ref);
   });
 
+  it('adds rotation per input and blank pages sized like the page shown before (or after, when first)', async () => {
+    const b = await (await makePdf(2, 'B', { size: [500, 200], rotate: 90 })).save();
+    const out = await PDFDocument.load(await mergePdfs([{ blank: true }, { file: b, pages: '1', rotate: 270 }, { file: b, pages: '2' }, { blank: true }]));
+    expect(out.getPageCount()).toBe(4);
+    expect(out.getPage(1).getRotation().angle).toBe(0);
+    expect(out.getPage(2).getRotation().angle).toBe(90);
+    // Page 2 is shown 200 × 500 (rotated 90°); the blank after it is that size, unrotated.
+    expect(out.getPage(3).getSize()).toEqual({ width: 200, height: 500 });
+    expect(out.getPage(3).getRotation().angle).toBe(0);
+    expect(out.getPage(0).getSize()).toEqual({ width: 500, height: 200 });
+    expect(out.getPage(0).node.Contents()).toBeUndefined();
+  });
+
   it('remaps internal links and drops links to excluded pages without orphan page copies', async () => {
     const a = await makePdf(3, 'A');
     addInternalLink(a, a.getPage(0), a.getPage(2));

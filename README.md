@@ -37,13 +37,13 @@ Server environment variables: `PORT` (3001), `DATA_DIR` (`apps/server/data`), `M
 
 ## Merge
 
-- **UI**: in the *Merge* tab, drop PDFs, drag page thumbnails to reorder them (also across files), remove pages with ×, then *Merge & download*. Password-protected files ask for the password.
+- **UI**: in the *Merge & Pages* tab, drop PDFs, drag page thumbnails to reorder them (also across files), and use a page's hover buttons to rotate it (↻, 90° clockwise), insert a blank page after it (+, sized like the page shown before it) or remove it (×). Then *Merge & download*, or *Edit result* to open the result in the editor. The editor's *Arrange pages* sends the current edited PDF here; its edits are kept but can no longer be undone one by one. Password-protected files ask for the password.
 - **CLI**: `pnpm pdf-tool merge a.pdf b.pdf:1-3 -o out.pdf` (ranges like `1-3,5,8-`, `-2`, `5-3`). For encrypted inputs: `--password a.pdf=secret`.
 - **API**: `POST /api/merge`, multipart:
   - `files`: one or more PDFs, in order
   - `ranges` (optional): JSON array aligned with `files`, e.g. `["", "1-3"]`
   - `passwords` (optional): JSON array aligned with `files`
-  - `segments` (optional): JSON `[{"file":1,"pages":"2"},{"file":0}]` for any page order across files. It overrides `ranges`.
+  - `segments` (optional): JSON `[{"file":1,"pages":"2","rotate":90},{"blank":true},{"file":0}]` for any page order across files. `rotate` (0/90/180/270) is added to each page's rotation, and `{"blank":true}` inserts an empty page the size of the page shown before it. It overrides `ranges`.
 
   Returns `application/pdf`. Errors are JSON `{ error: { code, message } }`. Codes: `INVALID_RANGE`, `INVALID_PDF`, `ENCRYPTED` (password needed), `BAD_PASSWORD`, `UNSUPPORTED_ENCRYPTION`, `NOT_PDF`, `TOO_LARGE`.
 

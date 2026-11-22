@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { MergeView } from './merge/MergeView.tsx';
 import { EditorView } from './editor/EditorView.tsx';
 import { Dialogs } from './lib/Dialogs.tsx';
+import { useEditor } from './editor/store.ts';
+import { useMergeStore } from './merge/store.ts';
+
+const TAB_LABEL = { merge: 'Merge & Pages', edit: 'edit' };
 
 type Tab = 'merge' | 'edit';
 
@@ -18,13 +22,27 @@ export function App() {
               onClick={() => setTab(t)}
               className={`rounded px-3 py-1 text-sm capitalize ${tab === t ? 'bg-slate-900 text-white' : 'hover:bg-slate-100'}`}
             >
-              {t}
+              {TAB_LABEL[t]}
             </button>
           ))}
         </nav>
       </header>
       <main className="min-h-0 flex-1">
-        {tab === 'merge' ? <MergeView /> : <EditorView />}
+        {tab === 'merge' ? (
+          <MergeView
+            onEdit={(file) => {
+              useEditor.getState().setIncoming(file);
+              setTab('edit');
+            }}
+          />
+        ) : (
+          <EditorView
+            onArrange={(file) => {
+              useMergeStore.getState().setIncoming([file]);
+              setTab('merge');
+            }}
+          />
+        )}
       </main>
       <Dialogs />
     </div>

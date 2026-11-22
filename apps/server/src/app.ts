@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { analyzePdf, applyEdits, mergePdfs, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
+import { analyzePdf, applyEdits, mergePdfs, type BlankPage, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
 import { EditBatchSchema, MergeRangesSchema, MergeSegmentsSchema, type DocumentInfo, type EditResult } from '@pdf-toolkit/shared';
 import { config } from './config.ts';
 import { HttpError, contentDisposition, errorResponse, readPdfFile } from './http.ts';
@@ -42,7 +42,8 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
   app.get('/api/health', (c) => c.json({ ok: true }));
 
   // multipart: files[] (ordered); optional `ranges` and `passwords` = JSON arrays aligned with files;
-  // optional `segments` = JSON [{file, pages}] for an arbitrary page order across files (overrides ranges).
+  // optional `segments` = JSON [{file, pages, rotate?} | {blank: true}] for an arbitrary page order across
+  // files, page rotation and blank pages (overrides ranges).
   app.post('/api/merge', async (c) => {
     const form = await c.req.formData();
     const files = form.getAll('files');
@@ -59,17 +60,18 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     };
     const ranges = parseJson('ranges', MergeRangesSchema, 'a JSON array of strings') ?? [];
     const passwords = parseJson('passwords', MergeRangesSchema, 'a JSON array of strings') ?? [];
-    const segments = parseJson('segments', MergeSegmentsSchema, 'a JSON array of {file, pages}');
+    const segments = parseJson('segments', MergeSegmentsSchema, 'a JSON array of {file, pages, rotate?} or {blank: true}');
     const uploads: MergeInput[] = [];
     for (const [i, f] of files.entries()) {
       const { bytes, name } = await readPdfFile(f, `File ${i + 1}`);
       uploads.push({ file: bytes, pages: ranges[i] || undefined, password: passwords[i] || undefined, name: name.replace(/\.pdf$/i, '') });
     }
-    const inputs = segments
+    const inputs: (MergeInput | BlankPage)[] = segments
       ? segments.map((s) => {
+          if ('blank' in s) return s;
           const up = uploads[s.file];
           if (!up) throw new HttpError(400, 'BAD_REQUEST', `Segment references missing file ${s.file}`);
-          return { ...up, pages: s.pages || undefined };
+          return { ...up, pages: s.pages || undefined, rotate: s.rotate || undefined };
         })
       : uploads;
     const merged = await mergePdfs(inputs);

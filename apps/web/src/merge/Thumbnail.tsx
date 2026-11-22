@@ -15,19 +15,19 @@ export function getPdfDoc(file: SourceFile): Promise<PdfDoc> {
   return p;
 }
 
-export function Thumbnail({ file, pageIndex, width = 140 }: { file: SourceFile; pageIndex: number; width?: number }) {
+export function Thumbnail({ file, pageIndex, rotate = 0, width = 140 }: { file: SourceFile; pageIndex: number; rotate?: number; width?: number }) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let alive = true;
     getPdfDoc(file)
-      .then((doc) => renderThumbnail(doc, pageIndex + 1, width * 2))
+      .then((doc) => renderThumbnail(doc, pageIndex + 1, width * 2, rotate))
       .then((url) => alive && setSrc(url))
       .catch(() => alive && setFailed(true));
     return () => {
       alive = false;
     };
-  }, [file, pageIndex, width]);
+  }, [file, pageIndex, rotate, width]);
   if (failed) return <div className="flex h-44 items-center justify-center text-xs text-red-600">render failed</div>;
   if (!src) return <div className="h-44 animate-pulse bg-slate-200" style={{ width }} />;
   return <img src={src} alt={`${file.name} page ${pageIndex + 1}`} style={{ width }} className="block bg-white shadow" draggable={false} />;

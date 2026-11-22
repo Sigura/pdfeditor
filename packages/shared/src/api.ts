@@ -8,7 +8,14 @@ export const ApiErrorSchema = z.object({
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 
 export const MergeRangesSchema = z.array(z.string().max(1000).optional());
-export const MergeSegmentsSchema = z.array(z.object({ file: z.number().int().min(0), pages: z.string().max(1000).optional() })).max(10_000);
+export const MergeSegmentsSchema = z
+  .array(
+    z.union([
+      z.object({ file: z.number().int().min(0), pages: z.string().max(1000).optional(), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).optional() }),
+      z.object({ blank: z.literal(true) }),
+    ]),
+  )
+  .max(10_000);
 export type MergeSegment = z.infer<typeof MergeSegmentsSchema>[number];
 
 export const DocumentInfoSchema = z.object({

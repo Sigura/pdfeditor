@@ -176,7 +176,7 @@ function ProgressBanner() {
   );
 }
 
-export function EditorView() {
+export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
   const st = useEditor();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -238,7 +238,7 @@ export function EditorView() {
 
   const [downloading, setDownloading] = useState(false);
   // Changes still queued or being applied (a pending nudge, an edit's scan measuring) go into the file too.
-  const download = async () => {
+  const download = async (use: (blob: Blob, name: string) => void, saved: boolean) => {
     setDownloading(true);
     try {
       await track('Preparing the download…', async () => {
@@ -246,8 +246,8 @@ export function EditorView() {
         const { docId, revision, fileName } = useEditor.getState();
         const res = await fetch(`/api/documents/${docId}/download`);
         if (!res.ok) throw await apiError(res);
-        downloadBlob(await res.blob(), fileName.replace(/\.pdf$/i, '') + (revision ? '-edited.pdf' : '.pdf'));
-        useEditor.getState().setDownloaded(revision);
+        use(await res.blob(), fileName.replace(/\.pdf$/i, '') + (revision ? '-edited.pdf' : '.pdf'));
+        if (saved) useEditor.getState().setDownloaded(revision);
       });
     } catch (e) {
       st.setError((e as Error).message);
@@ -255,6 +255,14 @@ export function EditorView() {
       setDownloading(false);
     }
   };
+
+  useEffect(() => {
+    // Read from the store, not the render: StrictMode runs the effect twice with the same render.
+    const f = useEditor.getState().incoming;
+    if (!f) return;
+    useEditor.getState().setIncoming(null);
+    void open(f);
+  }, [st.incoming]);
 
   const fitWidth = () => {
     const m = useEditor.getState().pages[useEditor.getState().pageIndex];
@@ -392,10 +400,19 @@ export function EditorView() {
                 ↷
               </button>
             </div>
-            <button className="ml-auto rounded px-2 py-1 text-slate-600 hover:bg-slate-100" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
+            <button
+              data-testid="arrange-pages"
+              className="ml-auto rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40"
+              title="Reorder, rotate, delete or insert pages: opens the edited PDF in Merge & Pages (edits are kept, but can no longer be undone there)"
+              disabled={downloading}
+              onClick={() => void download((b, name) => onArrange(new File([b], name, { type: 'application/pdf' })), false)}
+            >
+              Arrange pages
+            </button>
+            <button className="rounded px-2 py-1 text-slate-600 hover:bg-slate-100" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
               ?
             </button>
-            <button data-testid="download" className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60" disabled={downloading} onClick={() => void download()}>
+            <button data-testid="download" className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60" disabled={downloading} onClick={() => void download(downloadBlob, true)}>
               Download
             </button>
           </>
