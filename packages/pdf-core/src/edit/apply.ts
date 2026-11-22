@@ -1,7 +1,7 @@
 import pdfLibFontkit from '@pdf-lib/fontkit';
 import { createHash } from 'node:crypto';
 import { PDFArray, PDFDict, PDFName, PDFStream, type PDFDocument, type PDFFont } from 'pdf-lib';
-import type { Color, EditOperation, EditResult, Matrix, PageModel, PageOverflow, Rect, StrategyReport, TextBox } from '@pdf-toolkit/shared';
+import { displayOrder, type Color, type EditOperation, type EditResult, type Matrix, type PageModel, type PageOverflow, type Rect, type StrategyReport, type TextBox } from '@pdf-toolkit/shared';
 import { faceCovers, findFallback, findSubstitute, loadFace, parseFontName, type FontRequest, type LoadedFace } from '../fonts/lookup.ts';
 import type { BoxInternal } from '../model/group.ts';
 import { applyPatch, emptyPatch, serializeOp, type StreamPatch } from '../content/parser.ts';
@@ -17,7 +17,7 @@ import { backgroundFill, colorOp, num, shiftRect, translateIn, union } from './o
 import { tableDrawer } from './tableDraw.ts';
 import { writeStoredTables } from '../model/pieceInfo.ts';
 import { headerRowsOf } from '../model/tablePattern.ts';
-import { flowModels, planFlow, tableEdge, writeFlow, type FlowPage, type FlowUnit, type TableEdge } from './paging.ts';
+import { flowModels, planFlowInOrder, tableEdge, writeFlow, type FlowPage, type FlowUnit, type TableEdge } from './paging.ts';
 
 export type ApplyResult = {
   bytes: Uint8Array;
@@ -221,7 +221,13 @@ function familyRequest(family: string): FontRequest {
 export async function applyEdits(original: Uint8Array, ops: EditOperation[], opts: { force?: ForceStrategy } = {}): Promise<ApplyResult> {
   const { doc, decrypted } = await loadPdf(original);
   const snapshot = decrypted ? null : snapshotObjects(doc.context);
+  const arrange = ops.findLast((op) => op.type === 'arrangePages');
+  for (const b of arrange?.blanks ?? []) {
+    const page = doc.addPage([b.width, b.height]);
+    page.node.set(PDFName.of('Contents'), doc.context.register(doc.context.stream('')));
+  }
   const analyses = analyzeDocument(doc, tableDefinitions(ops));
+  const order = arrange && displayOrder(arrange, analyses.length, analyses.length);
   const pages: PageModel[] = analyses.map((a) => structuredClone(a.model));
   const state = reduceEdits(pages, ops);
   const flowOp = ops.findLast((op) => op.type === 'setPageFlow');
@@ -518,15 +524,15 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
     return { view: page.view, units, headers, tops, bottoms, ...(layout && { paper: layout.paper }) };
   });
   const flowOpts = { repeat: new Set([...continuation].flatMap(([id, yes]) => (yes ? [id] : []))), pageNumbers: flowOp?.pageNumbers };
-  const plan = planFlow(flowPages, pageFlow, flowOpts);
+  const plan = planFlowInOrder(flowPages, order, pageFlow, flowOpts);
   const involved = (k: number) => plan.pages[k] !== undefined || reflows.some((rf) => rf.pageIndex === k);
-  const unmeasured = analyses.filter((a) => !a.model.editable && !scanLayouts.has(a.pageIndex));
+  const unmeasured = (order ?? analyses.map((a) => a.pageIndex)).map((k) => analyses[k]!).filter((a) => !a.model.editable && !scanLayouts.has(a.pageIndex));
   const firstUnmeasured = unmeasured.find((a) => involved(a.pageIndex));
   const overflows: PageOverflow[] = [];
   const continuations: EditResult['continuations'] = [];
   let outPages = pages;
   if (firstUnmeasured) {
-    const needsLayout = unmeasured.filter((a) => a.pageIndex >= firstUnmeasured.pageIndex).map((a) => a.pageIndex);
+    const needsLayout = unmeasured.slice(unmeasured.indexOf(firstUnmeasured)).map((a) => a.pageIndex);
     overflows.push({ pageIndex: firstUnmeasured.pageIndex, by: 0, needsLayout });
     warnings.push(`Scanned pages ${needsLayout.map((i) => i + 1).join(', ')} need a measured layout before content can flow across pages`);
   } else {
@@ -535,7 +541,7 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
       warnings.push(`Content on page ${plan.overflow.pageIndex + 1} extends ${plan.overflow.by.toFixed(1)} pt past the bottom of the body area`);
     }
     // Cut tables with header rows ask whether to repeat them; past the last page, a trial flow onto new pages finds them.
-    const splits = plan.overflow ? planFlow(flowPages, 'empty', flowOpts).splits : plan.splits;
+    const splits = plan.overflow ? planFlowInOrder(flowPages, order, 'empty', flowOpts).splits : plan.splits;
     for (const s of splits) if (!continuation.has(s.tableId) && flowPages.some((p) => p.headers?.[s.tableId])) continuations.push(s);
     if (plan.pages.some(Boolean)) {
       writeFlow(doc, plan);

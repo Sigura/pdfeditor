@@ -7,9 +7,9 @@ import { opPage } from './Changes.tsx';
 import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
-import { track, useEditor } from './store.ts';
+import { arrangement, pageNo, pageOrder, track, useEditor } from './store.ts';
 
-function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
+function Thumb({ pdf, index, no, rotate, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
   const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -24,14 +24,102 @@ function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc
   }, [pdf, index, revision]);
   return (
     <button ref={ref} onClick={onClick} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
-      {src ? <img src={src} alt={`Page ${index + 1}`} className="w-full bg-white shadow" /> : <div className="h-36 animate-pulse bg-slate-200" />}
-      <div className="mt-1 text-center text-xs text-slate-600">{index + 1}</div>
+      {src ? (
+        <img src={src} alt={`Page ${no}`} className="w-full bg-white shadow" style={rotate ? { transform: `rotate(${rotate}deg)${rotate % 180 ? ' scale(0.7)' : ''}` } : undefined} />
+      ) : (
+        <div className="h-36 animate-pulse bg-slate-200" />
+      )}
+      <div className="mt-1 text-center text-xs text-slate-600">{no}</div>
       {changes > 0 && (
         <span data-testid="thumb-changes" title={`${changes} change${changes > 1 ? 's' : ''} on this page`} className="absolute top-0 right-0 min-w-4 rounded-full bg-amber-500 px-1 text-[10px] leading-4 text-white">
           {changes}
         </span>
       )}
     </button>
+  );
+}
+
+const PAGE_DRAG = 'application/x-pdf-toolkit-page';
+
+/**
+ * Thumbnails in display order with page tools (drag to reorder, rotate, insert a blank page after,
+ * delete). Each change is one arrangePages op, so undo takes it back. Pages added by the flow follow
+ * the arranged pages and have no tools.
+ */
+function PageList({ pdf }: { pdf: PdfDoc }) {
+  const st = useEditor();
+  const order = pageOrder(st.ops, st.pages);
+  const base = st.pages.filter((p) => !p.added).length;
+  const arr = arrangement(st.ops);
+  const rotation = (k: number) => arr?.order.find((e) => e.page === k)?.rotate ?? 0;
+  const shown = order.filter((k) => k < base);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+  const commit = (pages: { page: number; rotate: number }[], blanks = arr?.blanks ?? []) =>
+    void st.edit([{ type: 'arrangePages', order: pages.map(({ page, rotate }) => (rotate ? { page, rotate: rotate as 0 | 90 | 180 | 270 } : { page })), blanks }]);
+  const entries = () => shown.map((k) => ({ page: k, rotate: rotation(k) }));
+  const rotate = (k: number) => commit(entries().map((e) => (e.page === k ? { ...e, rotate: (e.rotate + 90) % 360 } : e)));
+  const remove = (k: number) => commit(entries().filter((e) => e.page !== k));
+  const insertBlank = (k: number) => {
+    const m = st.pages[k]!;
+    const [w, h] = [m.view.x1 - m.view.x0, m.view.y1 - m.view.y0];
+    const turned = (m.rotate + rotation(k)) % 180 !== 0;
+    const list = entries();
+    list.splice(list.findIndex((e) => e.page === k) + 1, 0, { page: base, rotate: 0 });
+    commit(list, [...(arr?.blanks ?? []), turned ? { width: h, height: w } : { width: w, height: h }]);
+  };
+  const move = (from: number, before: number) => {
+    const list = entries();
+    const item = list.splice(list.findIndex((e) => e.page === from), 1)[0]!;
+    const at = list.findIndex((e) => e.page === before);
+    list.splice(at < 0 ? list.length : at, 0, item);
+    if (list.some((e, i) => e.page !== shown[i])) commit(list);
+  };
+  const tool = 'rounded bg-white/90 px-1 text-xs leading-5 shadow hover:bg-sky-100 disabled:opacity-40';
+  return (
+    <>
+      {order.map((k, i) => {
+        const own = k < base;
+        return (
+          <div
+            key={k}
+            data-testid="page-thumb"
+            data-page={k}
+            className={`group relative ${dragOver === k ? 'border-t-4 border-sky-500' : ''}`}
+            draggable={own && !st.busy}
+            onDragStart={(e) => e.dataTransfer.setData(PAGE_DRAG, String(k))}
+            onDragOver={(e) => {
+              if (!own || !e.dataTransfer.types.includes(PAGE_DRAG)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setDragOver(k);
+            }}
+            onDragLeave={() => setDragOver(null)}
+            onDrop={(e) => {
+              if (!e.dataTransfer.types.includes(PAGE_DRAG)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setDragOver(null);
+              move(Number(e.dataTransfer.getData(PAGE_DRAG)), k);
+            }}
+          >
+            <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} revision={st.revision} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
+            {own && (
+              <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-hover:flex">
+                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise" onClick={() => rotate(k)}>
+                  ↻
+                </button>
+                <button data-testid="thumb-blank" className={tool} disabled={st.busy} title="Insert a blank page after this one" onClick={() => insertBlank(k)}>
+                  +
+                </button>
+                <button data-testid="thumb-delete" className={tool} disabled={st.busy || shown.length < 2} title="Delete this page" onClick={() => remove(k)}>
+                  ×
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }
 
@@ -42,7 +130,7 @@ function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc
  * that doesn't fit the page.
  */
 function PromptDialog() {
-  const { prompt, setPrompt, revert, edit, busy } = useEditor();
+  const { prompt, setPrompt, revert, edit, busy, ops, pages } = useEditor();
   const [repeat, setRepeat] = useState(true);
   const [numbers, setNumbers] = useState<'keep' | 'omit'>('omit');
   useEffect(() => {
@@ -70,9 +158,9 @@ function PromptDialog() {
           ];
   const text =
     prompt.kind === 'newPage'
-      ? `Content runs ${prompt.by.toFixed(1)} pt past the bottom of the last page (${prompt.pageIndex + 1}). Continue it on a new page?`
+      ? `Content runs ${prompt.by.toFixed(1)} pt past the bottom of the last page (${pageNo({ ops, pages }, prompt.pageIndex)}). Continue it on a new page?`
       : prompt.kind === 'continuation'
-        ? `A table continues on page ${prompt.pageIndex + 1}. Repeat header rows on the continued part?`
+        ? `A table continues on page ${pageNo({ ops, pages }, prompt.pageIndex)}. Repeat header rows on the continued part?`
         : `The new column would make the table exceed the page width by ${prompt.by.toFixed(1)} pt. Shrink the other columns proportionally (text wraps, font size stays) or cancel?`;
   const radio = (name: string, testId: string, label: string, checked: boolean, onChange: () => void) => (
     <label className="mr-3 inline-flex items-center gap-1">
@@ -287,20 +375,22 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       }
       if (e.altKey) return;
       const el = sectionRef.current;
-      const last = s.pages.length - 1;
+      const order = pageOrder(s.ops, s.pages);
+      const pos = order.indexOf(s.pageIndex);
+      const last = order.length - 1;
       if (e.key === 'PageDown' || e.key === 'PageUp') {
         e.preventDefault();
         if (!el) return;
         const down = e.key === 'PageDown';
         const canScroll = down ? el.scrollTop + el.clientHeight < el.scrollHeight - 2 : el.scrollTop > 2;
         if (canScroll) el.scrollBy({ top: (down ? 0.9 : -0.9) * el.clientHeight });
-        else if (down ? s.pageIndex < last : s.pageIndex > 0) {
-          s.setPage(s.pageIndex + (down ? 1 : -1));
+        else if (down ? pos < last : pos > 0) {
+          s.setPage(order[pos + (down ? 1 : -1)]!);
           requestAnimationFrame(() => (el.scrollTop = down ? 0 : el.scrollHeight));
         }
       } else if (e.key === 'Home' || e.key === 'End') {
         e.preventDefault();
-        s.setPage(e.key === 'Home' ? 0 : last);
+        s.setPage(order[e.key === 'Home' ? 0 : last]!);
       } else if (e.key === '?') {
         setHelp((h) => !h);
       } else if (!s.tableSetup && !s.editingId && !s.editingCell) {
@@ -453,10 +543,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       ) : (
         <div className="flex min-h-0 flex-1">
           <aside className="w-36 shrink-0 space-y-2 overflow-y-auto border-r border-slate-200 bg-slate-50 p-2">
-            {pdf &&
-              st.pages.map((_, i) => (
-                <Thumb key={i} pdf={pdf} index={i} revision={st.revision} active={i === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === i).length} onClick={() => st.setPage(i)} />
-              ))}
+            {pdf && <PageList pdf={pdf} />}
           </aside>
           <section ref={sectionRef} className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
             {st.warnings.length > 0 && (
@@ -473,6 +560,11 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
                 ))}
               </ul>
             )}
+            {model && arrangement(st.ops)?.order.find((e) => e.page === st.pageIndex)?.rotate ? (
+              <div data-testid="page-rotation" className="mx-auto mb-2 w-fit rounded bg-sky-100 px-2 py-0.5 text-xs text-sky-800" title="Shown upright for editing; the downloaded page is rotated">
+                ↻ {arrangement(st.ops)!.order.find((e) => e.page === st.pageIndex)!.rotate}° on download
+              </div>
+            ) : null}
             {pdf && model && <PageView pdf={pdf} model={model} revision={st.revision} />}
           </section>
           <Inspector />

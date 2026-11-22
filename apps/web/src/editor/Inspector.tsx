@@ -3,7 +3,7 @@ import type { Align, Color, EditOperation, Table, TextBox } from '@pdf-toolkit/s
 import { detectBackground, fillOf, moveOp } from './background.ts';
 import { ChangesList } from './Changes.tsx';
 import { cssColor } from './PageView.tsx';
-import { useEditor } from './store.ts';
+import { pageNo, useEditor } from './store.ts';
 
 /** Number input that commits on Enter or blur, only when the value changed. */
 export const MIN_CELL = 4;
@@ -202,7 +202,7 @@ function CellInspector() {
 }
 
 export function Inspector() {
-  const { pages, pageIndex, selectedId, cell } = useEditor();
+  const { pages, pageIndex, selectedId, cell, ops } = useEditor();
   const model = pages[pageIndex];
   const box = model?.textBoxes.find((b) => b.id === selectedId);
   return (
@@ -217,7 +217,7 @@ export function Inspector() {
           <div className="space-y-1 text-slate-500">
             {model && (
               <Row k="Page">
-                {pageIndex + 1}: {(model.view.x1 - model.view.x0).toFixed(0)} × {(model.view.y1 - model.view.y0).toFixed(0)} pt
+                {pageNo({ ops, pages }, pageIndex)}: {(model.view.x1 - model.view.x0).toFixed(0)} × {(model.view.y1 - model.view.y0).toFixed(0)} pt
               </Row>
             )}
             <p>Select a text box or a table cell to see its properties.</p>

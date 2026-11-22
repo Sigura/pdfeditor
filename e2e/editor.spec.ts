@@ -55,7 +55,7 @@ test('arrange pages of an edited PDF, then edit the result', async ({ page }) =>
   // The editor still holds undownloaded edits, so opening the result asks first.
   await page.getByTestId('merge-edit').click();
   await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
-  await expect(page.locator('aside button')).toHaveCount(3);
+  await expect(page.getByTestId('page-thumb')).toHaveCount(3);
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
   const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
   expect(doc.numPages).toBe(3);
@@ -64,6 +64,44 @@ test('arrange pages of an edited PDF, then edit the result', async ({ page }) =>
   const text = (await (await doc.getPage(1)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');
   expect(text).not.toContain('Quarterly Report');
   await doc.destroy();
+});
+
+test('page tools in the editor: reorder, blank, rotate and delete are changes that undo; the download follows the display order', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  const thumbs = page.getByTestId('page-thumb');
+  const order = () => thumbs.evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-page'))));
+  await thumbs.nth(1).dragTo(thumbs.nth(0));
+  await expect.poll(order).toEqual([1, 0]);
+  await thumbs.nth(1).hover();
+  await thumbs.nth(1).getByTestId('thumb-blank').click();
+  await expect.poll(order).toEqual([1, 0, 2]);
+  await thumbs.nth(0).click();
+  await thumbs.nth(0).hover();
+  await thumbs.nth(0).getByTestId('thumb-rotate').click();
+  await expect(page.getByTestId('page-rotation')).toContainText('90°');
+  await thumbs.nth(1).hover();
+  await thumbs.nth(1).getByTestId('thumb-delete').click();
+  await expect.poll(order).toEqual([1, 2]);
+  await expect(changes(page)).toHaveCount(4);
+
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const pdfText = async (bytes: Uint8Array, n: number) => {
+    const doc = await getDocument({ data: bytes.slice(), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+    const p = await doc.getPage(n);
+    const out = { pages: doc.numPages, rotate: p.rotate, text: (await p.getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ') };
+    await doc.destroy();
+    return out;
+  };
+  const bytes = new Uint8Array(readFileSync((await download.path())!));
+  const first = await pdfText(bytes, 1);
+  expect(first.pages).toBe(2);
+  expect(first.rotate).toBe(90);
+  expect(first.text).toBe((await pdfText(new Uint8Array(readFileSync(fixture('latin-standard14.pdf'))), 2)).text);
+  expect((await pdfText(bytes, 2)).text).toBe('');
+
+  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await expect.poll(order).toEqual([1, 0, 2]);
+  await expect(changes(page)).toHaveCount(3);
 });
 
 test('edit text, nudge, restyle, undo one change and download', async ({ page }) => {

@@ -46,6 +46,8 @@ export type FlowPlan = {
   /** Original page whose header/footer bands the added pages copy (or undefined for empty pages). */
   template?: number;
   added: number;
+  /** Page the added pages follow and take their size from (default: the last page). */
+  last?: number;
   /**
    * Content left past the body bottom of the last page (no new pages allowed, or a block taller than
    * the body); `pageNumber`: page-number text in the last page's header/footer, which a copy page repeats.
@@ -356,6 +358,28 @@ const intersectRect = (a: Rect, b: Rect): Rect => {
  * pages draw clipped, translated bands of those forms. Added pages go after the last page, with the
  * last page's size and rotation.
  */
+/**
+ * planFlow over the pages in `order` (edit indices; the pages left out take no part), with the plan
+ * mapped back to edit indices: pages added by the flow get indices from `pages.length` on.
+ */
+export function planFlowInOrder(pages: FlowPage[], order: number[] | undefined, newPages: 'copy' | 'empty' | undefined, opts: FlowOptions = {}): FlowPlan {
+  if (!order) return planFlow(pages, newPages, opts);
+  const plan = planFlow(order.map((k) => pages[k]!), newPages, opts);
+  const at = (pos: number) => (pos < order.length ? order[pos]! : pages.length + pos - order.length);
+  const out: (PagePlan | undefined)[] = Array.from({ length: pages.length + plan.added }, () => undefined);
+  plan.pages.forEach((pp, pos) => {
+    out[at(pos)] = pp && { ...pp, draws: pp.draws.map((d) => ({ ...d, src: at(d.src) })) };
+  });
+  return {
+    ...plan,
+    pages: out,
+    ...(plan.template !== undefined && { template: at(plan.template) }),
+    last: at(order.length - 1),
+    ...(plan.overflow && { overflow: { ...plan.overflow, pageIndex: at(plan.overflow.pageIndex) } }),
+    splits: plan.splits.map((s) => ({ ...s, pageIndex: at(s.pageIndex) })),
+  };
+}
+
 export function writeFlow(doc: PDFDocument, plan: FlowPlan): void {
   const ctx = doc.context;
   const srcPages = doc.getPages();
@@ -395,7 +419,7 @@ export function writeFlow(doc: PDFDocument, plan: FlowPlan): void {
     forms.set(key, ref);
     return ref;
   };
-  const lastPage = srcPages[srcPages.length - 1]!;
+  const lastPage = srcPages[plan.last ?? srcPages.length - 1]!;
   // Every source is read before any page is rewritten.
   for (const pp of plan.pages) for (const d of pp?.draws ?? []) formOf(d.src, d.y0, d.y1, d.omit, d.edge);
   plan.pages.forEach((pp, k) => {
@@ -455,7 +479,7 @@ function shiftDeep<T>(v: T, dy: number): T {
  */
 export function flowModels(models: PageModel[], plan: FlowPlan): PageModel[] {
   const out: PageModel[] = models.map((m) => ({ ...m, textBoxes: [...m.textBoxes], tables: [...m.tables] }));
-  const lastModel = models[models.length - 1]!;
+  const lastModel = models[plan.last ?? models.length - 1]!;
   for (let k = models.length; k < plan.pages.length; k++) {
     out.push({ ...structuredClone(lastModel), pageIndex: k, textBoxes: [], tables: [], backgrounds: [], rulings: [], junctions: [], warnings: [], added: true });
   }

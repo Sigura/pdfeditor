@@ -1,10 +1,11 @@
 import type { EditOperation, PageModel } from '@pdf-toolkit/shared';
-import { useEditor } from './store.ts';
+import { pageNo, useEditor } from './store.ts';
 
 /** Id of the box or table an op changes. */
 export function opTarget(op: EditOperation): string {
   if (op.type === 'addTextBox') return op.id;
   if (op.type === 'setPageFlow' || op.type === 'scanLayout') return `page-flow`;
+  if (op.type === 'arrangePages') return 'arrange-pages';
   return 'tableId' in op ? op.tableId : op.elementId;
 }
 
@@ -53,6 +54,8 @@ function describe(op: EditOperation, name: string): string {
       return op.repeatHeader ? 'Continued table repeats its header rows' : 'Continued table without header rows';
     case 'scanLayout':
       return `Scan layout of page ${op.pageIndex + 1} (${op.lines.length} lines)`;
+    case 'arrangePages':
+      return `Arrange pages (${op.order.length} pages)`;
     case 'resizeTable':
       return `Resize table ${op.colWidths ? 'columns' : ''}${op.colWidths && op.rowHeights ? ' and ' : ''}${op.rowHeights ? 'rows' : ''}`;
   }
@@ -99,7 +102,7 @@ export function ChangesList() {
               >
                 <span className="mr-1 text-slate-400 tabular-nums">{i + 1}.</span>
                 {describe(op, nameOf(target))}
-                {page !== undefined && <span className="ml-1 text-slate-400">p{page + 1}</span>}
+                {page !== undefined && pageNo({ ops, pages }, page) > 0 && <span className="ml-1 text-slate-400">p{pageNo({ ops, pages }, page)}</span>}
               </button>
               <button
                 className="rounded px-1 text-slate-400 opacity-40 group-hover:opacity-100 hover:bg-red-100 hover:text-red-700 disabled:opacity-20"

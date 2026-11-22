@@ -4,6 +4,7 @@ import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { applyEdits } from '../src/edit/apply.ts';
+import { arrangePdf } from '../src/merge.ts';
 import { planFlow, type FlowPage } from '../src/edit/paging.ts';
 import { configureFonts } from '../src/fonts/lookup.ts';
 import { loadPdf } from '../src/load.ts';
@@ -829,6 +830,36 @@ describe('table paging (paged-table.pdf)', () => {
     const box = res.pages[1]!.textBoxes.find((b) => b.text === under)!;
     expect(box.id).toBe(analyzeDocument((await loadPdf(original)).doc)[0]!.model.textBoxes.find((b) => b.text === under)!.id);
     expect(res.pages[1]!.flowIn).toHaveLength(1);
+  });
+
+  it('arrangePages: the flow follows the display order onto an appended blank; download reorders, rotates and deletes in place', async () => {
+    const { original, t } = await setup();
+    const long = Array.from({ length: 9 }, (_, i) => `Long cell line ${i + 1}`).join(' ');
+    const cell = { type: 'setCellText' as const, tableId: t.id, row: 2, col: 0, text: long };
+    const order = [{ page: 0 }, { page: 2 }, { page: 1, rotate: 90 as const }];
+    const res = await applyEdits(original, [cell, { type: 'arrangePages', order, blanks: [{ width: 300, height: 400 }] }]);
+    expect(res.overflows).toEqual([]);
+    expect(res.pages).toHaveLength(3);
+    expect(res.pages[2]!.textBoxes.map((b) => b.text)).toContain(under);
+    expect(res.pages[1]!.textBoxes.map((b) => b.text)).not.toContain(under);
+    const before = await pageTexts(original);
+    const edited = await pageTexts(res.bytes);
+    expect(edited[1]!.find((x) => x.str === body(1))!.y).toBe(before[1]!.find((x) => x.str === body(1))!.y);
+
+    const out = await arrangePdf(res.bytes, order);
+    expect(Buffer.from(out.subarray(0, res.bytes.length)).equals(Buffer.from(res.bytes))).toBe(true);
+    const { doc } = await loadPdf(out);
+    const w = Math.round((await loadPdf(original)).doc.getPage(0).getWidth());
+    expect(doc.getPages().map((p) => [Math.round(p.getWidth()), p.getRotation().angle])).toEqual([
+      [w, 0],
+      [300, 0],
+      [w, 90],
+    ]);
+    expect(doc.context.trailerInfo.Info?.toString()).toBe((await loadPdf(original)).doc.context.trailerInfo.Info?.toString());
+    const texts = await pageTexts(out);
+    expect(texts[1]!.map((x) => x.str)).toContain(under);
+    expect(texts[2]!.map((x) => x.str)).toContain(body(1));
+    expect((await loadPdf(await arrangePdf(res.bytes, [{ page: 1 }]))).doc.getPageCount()).toBe(1);
   });
 
   it('past the last page: needsPage until the user picks; copy repeats the header/footer bands, empty does not; the table is split under one id; save → reopen', async () => {

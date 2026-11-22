@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { analyzePdf, applyEdits, mergePdfs, type BlankPage, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
-import { EditBatchSchema, MergeRangesSchema, MergeSegmentsSchema, type DocumentInfo, type EditResult } from '@pdf-toolkit/shared';
+import { analyzePdf, applyEdits, arrangePdf, mergePdfs, type BlankPage, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
+import { EditBatchSchema, displayOrder, MergeRangesSchema, MergeSegmentsSchema, type DocumentInfo, type EditResult } from '@pdf-toolkit/shared';
 import { config } from './config.ts';
 import { HttpError, contentDisposition, errorResponse, readPdfFile } from './http.ts';
 import { DocumentStore } from './store.ts';
@@ -154,7 +154,14 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
   // Current revision for in-browser rendering (?original=1: the uploaded file, for measurements in original coordinates).
   const sendCurrent = async (id: string, attachment: boolean, original = false) => {
     const meta = await store.meta(id);
-    const bytes = original ? await store.original(id) : await store.current(id);
+    let bytes: Uint8Array = original ? await store.original(id) : await store.current(id);
+    const arrange = original ? undefined : meta.ops.findLast((op) => op.type === 'arrangePages');
+    if (attachment && arrange) {
+      const pages = (await analysisOf(id)).pages;
+      const rotate = new Map(arrange.order.map((e) => [e.page, e.rotate]));
+      const order = displayOrder(arrange, pages.length, pages.filter((p) => !p.added).length);
+      bytes = await arrangePdf(bytes, order.map((page) => ({ page, rotate: rotate.get(page) })));
+    }
     const headers: Record<string, string> = { 'Content-Type': 'application/pdf', 'Cache-Control': 'no-store' };
     if (attachment) headers['Content-Disposition'] = contentDisposition(meta.fileName.replace(/\.pdf$/i, '') + (meta.revision ? '-edited.pdf' : '.pdf'));
     return new Response(new Uint8Array(bytes), { status: 200, headers });

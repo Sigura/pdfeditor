@@ -17,6 +17,7 @@ import {
 import { parsePageRanges } from './ranges.ts';
 import { loadPdf } from './load.ts';
 import { PdfError } from './errors.ts';
+import { snapshotObjects, writeIncremental } from './save/incremental.ts';
 
 export type MergeInput = {
   file: Uint8Array;
@@ -36,6 +37,35 @@ const PLACEHOLDER = 'PdfToolkitSrcPage';
 const N = (s: string) => PDFName.of(s);
 
 type OutlineNode = { title: PDFObject; dest: PDFArray | null; color?: PDFObject; flags?: PDFObject; children: OutlineNode[] };
+
+/**
+ * Reorders, removes and rotates the pages of a file in place (`page`: 0-based index; `rotate` is added to
+ * the page's rotation). The catalog, /Info, XMP and outlines stay; an unencrypted file gets an
+ * incremental update. Pages left out stay in the file but not in the page tree.
+ */
+export async function arrangePdf(bytes: Uint8Array, order: { page: number; rotate?: number }[]): Promise<Uint8Array> {
+  const { doc, decrypted } = await loadPdf(bytes);
+  const snapshot = decrypted ? null : snapshotObjects(doc.context);
+  const pages = doc.getPages();
+  const treeRef = doc.catalog.get(N('Pages'));
+  if (!(treeRef instanceof PDFRef)) throw new PdfError('INVALID_PDF', 'The page tree is not an indirect object');
+  const refs = order.map(({ page: k, rotate }) => {
+    const page = pages[k];
+    if (!page) throw new PdfError('INVALID_EDIT', `Page ${k + 1} does not exist (${pages.length} pages)`);
+    // Inherited attributes move to the page, as it may leave the node it inherited them from.
+    for (const key of ['Resources', 'MediaBox', 'CropBox', 'Rotate']) {
+      const v = page.node.getInheritableAttribute(N(key));
+      if (v && !page.node.get(N(key))) page.node.set(N(key), v);
+    }
+    if (rotate) page.setRotation(degrees((((page.getRotation().angle + rotate) % 360) + 360) % 360));
+    page.node.setParent(treeRef);
+    return page.ref;
+  });
+  const tree = doc.catalog.Pages();
+  tree.set(N('Kids'), doc.context.obj(refs));
+  tree.set(N('Count'), PDFNumber.of(refs.length));
+  return snapshot ? writeIncremental(bytes, doc.context, snapshot) : doc.save({ useObjectStreams: false });
+}
 
 export async function mergePdfs(inputs: (MergeInput | BlankPage)[]): Promise<Uint8Array> {
   if (inputs.length === 0) throw new PdfError('INVALID_RANGE', 'No input files');

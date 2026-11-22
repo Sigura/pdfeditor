@@ -108,6 +108,30 @@ export const ScanLayoutOp = z.object({
   paper: ColorSchema,
 });
 
+/**
+ * Page arrangement of the output (the last one wins). `order` lists edit page indices in output order;
+ * a page left out is deleted. `blanks` are appended to the edit document as pages base…base+B−1
+ * (base = the original page count), so they can be edited. Pages added by the flow come after them
+ * and are always output last. `rotate` adds to the page's rotation. Applied on download only.
+ */
+export const ArrangePagesOp = z.object({
+  type: z.literal('arrangePages'),
+  order: z
+    .array(z.object({ page: z.number().int().min(0), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).optional() }))
+    .min(1)
+    .max(10_000)
+    .refine((o) => new Set(o.map((e) => e.page)).size === o.length, 'A page appears twice'),
+  blanks: z.array(z.object({ width: finite.positive(), height: finite.positive() })).max(1000),
+});
+export type ArrangePages = z.infer<typeof ArrangePagesOp>;
+
+/** Output order of edit pages: the arrangement's pages, then pages added by the flow (index ≥ base). */
+export function displayOrder(arrange: ArrangePages | undefined, pageCount: number, base: number): number[] {
+  const all = Array.from({ length: pageCount }, (_, k) => k);
+  if (!arrange) return all;
+  return [...arrange.order.map((e) => e.page).filter((k) => k < base), ...all.slice(base)];
+}
+
 export const EditOperationSchema = z.discriminatedUnion('type', [
   ReplaceTextOp,
   AddTextBoxOp,
@@ -124,6 +148,7 @@ export const EditOperationSchema = z.discriminatedUnion('type', [
   SetPageFlowOp,
   ScanLayoutOp,
   TableContinuationOp,
+  ArrangePagesOp,
 ]);
 export type EditOperation = z.infer<typeof EditOperationSchema>;
 

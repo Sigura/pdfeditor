@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { CellSpan, EditOperation, EditResult, PageModel, PageOverflow, Point, Rect, Ruling, StrategyReport, TableSetup } from '@pdf-toolkit/shared';
+import { displayOrder, type ArrangePages, type CellSpan, type EditOperation, type EditResult, type PageModel, type PageOverflow, type Point, type Rect, type Ruling, type StrategyReport, type TableSetup } from '@pdf-toolkit/shared';
 import { postEdits } from '../lib/api.ts';
 import { measureScanLayouts, moveOp } from './background.ts';
 
@@ -47,6 +47,14 @@ export async function track<T>(label: string, fn: (step: (label: string) => void
 }
 
 /** Arrow-key moves not yet sent, in PDF user space. */
+export const arrangement = (ops: EditOperation[]): ArrangePages | undefined => ops.findLast((op) => op.type === 'arrangePages');
+
+/** Edit page indices in the order the pages are shown and downloaded. */
+export const pageOrder = (ops: EditOperation[], pages: PageModel[]): number[] => displayOrder(arrangement(ops), pages.length, pages.filter((p) => !p.added).length);
+
+/** 1-based number of edit page `k` as shown. */
+export const pageNo = (s: { ops: EditOperation[]; pages: PageModel[] }, k: number): number => pageOrder(s.ops, s.pages).indexOf(k) + 1;
+
 export type Nudge = { id: string; dx: number; dy: number };
 
 export type EditorState = {
@@ -219,7 +227,12 @@ export const useEditor = create<EditorState>((set, get) => ({
   hover: (hoveredId) => set({ hoveredId }),
   select: (selectedId) => set((s) => ({ selectedId, editingId: s.editingId === selectedId ? s.editingId : null, cell: null, editingCell: null })),
   startEditing: (editingId) => set({ editingId, selectedId: editingId, cell: null, editingCell: null }),
-  applyResult: (r) => set({ revision: r.revision, ops: r.ops, reports: r.reports, warnings: r.warnings, overflows: r.overflows, continuations: r.continuations, pages: r.pages, editingId: null, editingCell: null }),
+  applyResult: (r) =>
+    set((s) => {
+      const order = pageOrder(r.ops, r.pages);
+      const pageIndex = order.includes(s.pageIndex) ? s.pageIndex : (order.find((k) => k > s.pageIndex) ?? order[order.length - 1]!);
+      return { revision: r.revision, ops: r.ops, reports: r.reports, warnings: r.warnings, overflows: r.overflows, continuations: r.continuations, pages: r.pages, editingId: null, editingCell: null, pageIndex };
+    }),
   setBusy: (busy) => set({ busy }),
   setError: (error) => set({ error }),
   toggleChanges: () => set((s) => ({ showChanges: !s.showChanges })),

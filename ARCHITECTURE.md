@@ -8,7 +8,8 @@ packages/shared     zod schemas + inferred types: page model, edit operations, A
 packages/pdf-core   All PDF logic. Pure TypeScript on Node (uses node:crypto, node:fs for
                     font lookup). No HTTP, no React. Strict TS, no `any`.
   ranges.ts         page-range parser ("1-3,5,8-")
-  merge.ts          mergePdfs(): page copy, outline merge, link remap, AcroForm rename
+  merge.ts          mergePdfs(): page copy, outline merge, link remap, AcroForm rename;
+                    arrangePdf(): reorder/rotate/remove pages in place (incremental)
   crypto/           standard security handler (RC4 / AES-128 / AES-256) for password input
   content/          content-stream tokenizer, parser (ops with byte offsets), serializer
   model/            interpreter (graphics + text state), text-run extraction, line/box
@@ -69,6 +70,7 @@ Discriminated union on `type`, validated with zod:
 | `resizeTable`    | `tableId`, `rowHeights?`, `colWidths?` (top-left corner fixed) |
 | `setTextStyle`   | `elementId` (box), `color?`, `align?`, `lineSpacing?` (× font size), `background?`. Merged per box; layout keeps the box's font and in-line glyph offsets |
 | `setPageFlow`    | `newPages: 'copy'\|'empty'`: how content continues past the last page (last one wins) |
+| `arrangePages`   | `order` ([{`page`, `rotate?`}], edit indices in output order; left out = deleted), `blanks` ([{`width`, `height`}], appended to the edit document after the original pages, so they are editable). Last one wins. The flow follows `order`; pages it adds come after the blanks and are output last. Applied on download only (`arrangePdf`, so /Info, XMP and outlines stay); the preview and models keep edit indices and the editor maps display order to them |
 | `scanLayout`     | `pageIndex`, `lines` (ink y ranges, original coordinates), `paper`: measured layout of a scanned page for the page flow |
 
 The server keeps the original bytes plus the **full ordered list** of operations for a document.
