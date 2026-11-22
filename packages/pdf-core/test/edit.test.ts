@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -6,7 +7,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { applyEdits } from '../src/edit/apply.ts';
 import { arrangePdf } from '../src/merge.ts';
 import { planFlow, type FlowPage } from '../src/edit/paging.ts';
-import { configureFonts } from '../src/fonts/lookup.ts';
+import { configureFonts, fontIndex } from '../src/fonts/lookup.ts';
 import { loadPdf } from '../src/load.ts';
 import { analyzeDocument, pageContentBytes } from '../src/model/extract.ts';
 import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRef, PDFStream } from 'pdf-lib';
@@ -175,6 +176,52 @@ describe('S2 substitute fonts', () => {
     const update = Buffer.from(res.bytes.subarray(original.length)).toString('latin1');
     expect([...update.matchAll(/^(\d+) 0 obj/gm)].map((m) => m[1])).not.toContain(infoNum);
     expect(doc.getTitle()).toBe('latin-standard14');
+  });
+
+  it('embeds a face from a .ttc collection and never a restricted-licence font', async () => {
+    const font = (name: string) => new Uint8Array(readFileSync(fontsDir + name));
+    const tables = (b: Uint8Array) => {
+      const v = new DataView(b.buffer, b.byteOffset);
+      return Array.from({ length: v.getUint16(4) }, (_, i) => ({ v, rec: 12 + 16 * i, tag: String.fromCharCode(...b.subarray(12 + 16 * i, 16 + 16 * i)), off: v.getUint32(20 + 16 * i) }));
+    };
+    const ttc = (fonts: Uint8Array[]) => {
+      const pad = (n: number) => (n + 3) & ~3;
+      const out = new Uint8Array(fonts.reduce((s, f) => s + pad(f.length), 12 + 4 * fonts.length));
+      const v = new DataView(out.buffer);
+      out.set(new TextEncoder().encode('ttcf'));
+      v.setUint32(4, 0x00010000);
+      v.setUint32(8, fonts.length);
+      let base = 12 + 4 * fonts.length;
+      fonts.forEach((f, i) => {
+        v.setUint32(12 + 4 * i, base);
+        out.set(f, base);
+        for (const t of tables(f)) v.setUint32(base + t.rec + 8, t.off + base);
+        base += pad(f.length);
+      });
+      return out;
+    };
+    const restricted = font('LiberationSans-Bold.ttf');
+    const os2 = tables(restricted).find((t) => t.tag === 'OS/2')!;
+    os2.v.setUint16(os2.off + 8, 0x0002);
+    const [first, second] = [mkdtempSync(path.join(tmpdir(), 'fonts-a-')), mkdtempSync(path.join(tmpdir(), 'fonts-b-'))];
+    writeFileSync(path.join(first, 'restricted.ttf'), restricted);
+    writeFileSync(path.join(second, 'pair.ttc'), ttc([font('LiberationSans-Regular.ttf'), font('LiberationSans-Bold.ttf')]));
+    configureFonts({ dirs: [first], bundled: [second], system: false });
+
+    const faces = fontIndex().faces.map((f) => ({ ps: f.postscriptName, face: f.face, source: f.source, embeddable: f.embeddable, free: f.license.free }));
+    expect(faces).toEqual([
+      { ps: 'LiberationSans-Bold', face: undefined, source: 'local', embeddable: false, free: true },
+      { ps: 'LiberationSans', face: 0, source: 'bundled', embeddable: true, free: true },
+      { ps: 'LiberationSans-Bold', face: 1, source: 'bundled', embeddable: true, free: true },
+    ]);
+    const original = fixture('latin-standard14.pdf');
+    const box = await boxId(original, 0);
+    const res = await applyEdits(original, [{ type: 'replaceText', elementId: box.id, text: 'Quarterly Raporu ş' }]);
+    expect(res.reports).toMatchObject([{ strategy: 'substitute', substituteFont: 'LiberationSans-Bold' }]);
+    expect(await pdfjsLines(res.bytes)).toContain('Quarterly Raporu ş');
+    configureFonts({ dirs: [first], system: false });
+    const alone = await applyEdits(original, [{ type: 'replaceText', elementId: box.id, text: 'Quarterly Raporu ş' }]);
+    expect(alone.reports[0]!.strategy).not.toBe('substitute');
   });
 });
 

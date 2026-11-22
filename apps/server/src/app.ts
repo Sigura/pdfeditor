@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { analyzePdf, applyEdits, arrangePdf, deskewPdf, mergePdfs, type BlankPage, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
+import { analyzePdf, applyEdits, arrangePdf, deskewPdf, faceBytes, fontIndex, mergePdfs, type BlankPage, type FontFace, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
 import { EditBatchSchema, displayOrder, MergeRangesSchema, MergeSegmentsSchema, type DocumentInfo, type EditResult } from '@pdf-toolkit/shared';
 import { config } from './config.ts';
 import { HttpError, contentDisposition, errorResponse, readPdfFile } from './http.ts';
@@ -40,6 +40,38 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
   };
 
   app.get('/api/health', (c) => c.json({ ok: true }));
+
+  // Installed fonts (local folder, bundled packages, system), one entry per PostScript name as the
+  // substitute lookup sees them; `id` is valid until the server restarts.
+  const listedFonts = (): FontFace[] => {
+    const seen = new Set<string>();
+    return fontIndex().faces.filter((f) => f.postscriptName && !seen.has(f.postscriptName) && seen.add(f.postscriptName));
+  };
+  app.get('/api/fonts', (c) =>
+    c.json({
+      fonts: listedFonts().map((f, id) => ({
+        id,
+        postscriptName: f.postscriptName,
+        family: f.typoFamily,
+        style: f.style,
+        bold: f.bold,
+        italic: f.italic,
+        serif: f.serif,
+        mono: f.mono,
+        source: f.source,
+        license: f.license,
+        embeddable: f.embeddable,
+      })),
+    }),
+  );
+  app.get('/api/fonts/:id', (c) => {
+    const face = listedFonts()[Number(c.req.param('id'))];
+    if (!face) throw new HttpError(404, 'NOT_FOUND', 'No such font');
+    const bytes = faceBytes(face);
+    const magic = new TextDecoder().decode(bytes.subarray(0, 4));
+    const type = magic === 'wOFF' ? 'font/woff' : magic === 'wOF2' ? 'font/woff2' : magic === 'OTTO' ? 'font/otf' : 'font/ttf';
+    return c.body(bytes, 200, { 'Content-Type': type, 'Cache-Control': 'private, max-age=3600' });
+  });
 
   // multipart: files[] (ordered); optional `ranges` and `passwords` = JSON arrays aligned with files;
   // optional `segments` = JSON [{file, pages, rotate?} | {blank: true}] for an arbitrary page order across

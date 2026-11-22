@@ -3,7 +3,7 @@ import { configureFonts } from '@pdf-toolkit/pdf-core';
 import { createApp } from './app.ts';
 import { config } from './config.ts';
 
-configureFonts({ dirs: [config.fontsDir], system: config.systemFonts });
+configureFonts({ dirs: [config.fontsDir], bundled: config.bundledFonts, system: config.systemFonts });
 const { app, store } = createApp();
 await store.init();
 serve({ fetch: app.fetch, port: config.port }, (info) => {

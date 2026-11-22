@@ -1,12 +1,26 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import * as fontkit from 'fontkit';
 
+/** `id` is an SPDX-like name for free licences, else 'proprietary' (licence text that isn't a known free one) or 'unknown'. */
+export type FontLicense = { id: string; free: boolean; url?: string };
+
 export type FontFace = {
   file: string;
+  /** Face number inside a .ttc/.otc collection. */
+  face?: number;
   postscriptName: string;
   family: string;
+  /** Typographic family and style (name IDs 16/17, e.g. "Inter" + "Thin Italic"), for display. */
+  typoFamily: string;
+  style: string;
+  source: 'local' | 'bundled' | 'system';
+  license: FontLicense;
+  /** OS/2 fsType: restricted-licence and bitmap-only fonts may not be embedded, no-subsetting ones only whole. */
+  embeddable: boolean;
+  subset: boolean;
   bold: boolean;
   italic: boolean;
   serif: boolean;
@@ -39,13 +53,14 @@ const SYSTEM_DIRS = [
   'C:\\Windows\\Fonts',
 ];
 
-let config: { dirs: string[]; system: boolean } = { dirs: process.env.PDF_FONTS_DIR ? [process.env.PDF_FONTS_DIR] : [], system: true };
+type Config = { dirs: string[]; bundled: string[]; system: boolean };
+let config: Config = { dirs: process.env.PDF_FONTS_DIR ? [process.env.PDF_FONTS_DIR] : [], bundled: [], system: true };
 let index: { faces: FontFace[]; errors: string[] } | null = null;
 const loadedCache = new Map<string, LoadedFace>();
 
-/** Sets the local font directories (searched before system fonts) and resets the index. */
-export function configureFonts(opts: { dirs: string[]; system?: boolean }): void {
-  config = { dirs: opts.dirs, system: opts.system ?? true };
+/** Sets the local font directories, then the bundled ones (both searched before system fonts), and resets the index. */
+export function configureFonts(opts: { dirs: string[]; bundled?: string[]; system?: boolean }): void {
+  config = { dirs: opts.dirs, bundled: opts.bundled ?? [], system: opts.system ?? true };
   index = null;
   loadedCache.clear();
 }
@@ -71,13 +86,66 @@ export function parseFontName(name: string): { family: string; bold: boolean; it
 
 const isMissing = (e: unknown) => ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes((e as NodeJS.ErrnoException).code ?? '');
 
-function listFontFiles(dir: string, out: string[], depth = 0): void {
-  if (depth > 6) return;
+const FONT_FILE = /\.(ttf|otf|ttc|otc|woff2?)$/i;
+
+/** Font files fontconfig knows about (it also covers directories outside SYSTEM_DIRS); none where fc-list isn't installed. */
+function fontconfigFiles(): string[] {
+  try {
+    return execFileSync('fc-list', ['--format', '%{file}\n'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+      .split('\n')
+      .filter((f) => FONT_FILE.test(f));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw e;
+  }
+}
+
+const FREE_LICENSES: [string, RegExp][] = [
+  ['OFL-1.1', /open font licen[cs]e|scripts\.sil\.org\/OFL|openfontlicense\.org|\bOFL\b/i],
+  ['Apache-2.0', /apache licen[cs]e|apache\.org\/licenses/i],
+  // Bitstream Vera's text is MIT-like, so it is matched first.
+  ['Bitstream-Vera', /bitstream vera|dejavu/i],
+  ['MIT', /\bMIT licen[cs]e|opensource\.org\/licenses\/MIT|permission is hereby granted, free of charge/i],
+  ['UFL-1.0', /ubuntu font licen[cs]e/i],
+  ['GPL-2.0-with-font-exception', /liberation ?fonts? ?licen[cs]e|GNU General Public Licen[cs]e|gnu\.org\/licenses\/gpl/i],
+  ['GUST', /GUST font licen[cs]e/i],
+  ['LPPL', /LaTeX Project Public Licen[cs]e/i],
+  ['public-domain', /public domain/i],
+];
+
+const nameRecord = (f: fontkit.Font, key: string): string | undefined => {
+  const r = (f as unknown as { name?: { records?: Record<string, Record<string, string>> } }).name?.records?.[key];
+  return r ? (r.en ?? Object.values(r)[0]) : undefined;
+};
+
+/** A licence file shipped next to the font (or one directory up), e.g. LICENSE_FONT in @expo-google-fonts packages. */
+function licenseFile(file: string): string | undefined {
+  for (const dir of [path.dirname(file), path.dirname(path.dirname(file))])
+    for (const name of ['LICENSE_FONT', 'OFL.txt', 'OFL-1.1.txt']) {
+      const p = path.join(dir, name);
+      if (existsSync(p)) return readFileSync(p, 'utf8').slice(0, 4000);
+    }
+  return undefined;
+}
+
+/** Name-table licence description and URL (IDs 13/14), else a shipped licence file, else the copyright notice. */
+export function fontLicense(f: fontkit.Font, file: string): FontLicense {
+  const url = nameRecord(f, 'licenseURL');
+  const sources = [[nameRecord(f, 'license'), url].filter(Boolean).join(' '), licenseFile(file) ?? '', nameRecord(f, 'copyright') ?? ''];
+  for (const text of sources) {
+    const hit = text && FREE_LICENSES.find(([, re]) => re.test(text));
+    if (hit) return { id: hit[0], free: true, ...(url && { url }) };
+  }
+  return { id: sources[0] ? 'proprietary' : 'unknown', free: false, ...(url && { url }) };
+}
+
+function listFontFiles(dir: string, out: string[], depth = 0): string[] {
+  if (depth > 6) return out;
   let entries: string[];
   try {
     entries = readdirSync(dir);
   } catch (e) {
-    if (isMissing(e)) return; // e.g. macOS font paths on Linux
+    if (isMissing(e)) return out; // e.g. macOS font paths on Linux
     throw e;
   }
   for (const e of entries) {
@@ -90,8 +158,9 @@ function listFontFiles(dir: string, out: string[], depth = 0): void {
       throw err;
     }
     if (st.isDirectory()) listFontFiles(p, out, depth + 1);
-    else if (/\.(ttf|otf)$/i.test(e)) out.push(p);
+    else if (FONT_FILE.test(e)) out.push(p);
   }
+  return out;
 }
 
 function classify(f: fontkit.Font): { serif: boolean; mono: boolean } {
@@ -111,31 +180,82 @@ function classify(f: fontkit.Font): { serif: boolean; mono: boolean } {
   return { serif, mono };
 }
 
+type Os2 = {
+  usWeightClass?: number;
+  fsSelection?: { italic?: boolean; bold?: boolean };
+  fsType?: { noEmbedding?: boolean; noSubsetting?: boolean; bitmapOnly?: boolean };
+};
+
+function describe(f: fontkit.Font, file: string, source: FontFace['source'], face?: number): FontFace {
+  const os2 = (f as unknown as { 'OS/2'?: Os2 })['OS/2'];
+  const sub = f.subfamilyName ?? '';
+  return {
+    file,
+    ...(face !== undefined && { face }),
+    postscriptName: f.postscriptName ?? '',
+    family: f.familyName ?? '',
+    typoFamily: nameRecord(f, 'preferredFamily') ?? f.familyName ?? '',
+    style: nameRecord(f, 'preferredSubfamily') ?? sub,
+    source,
+    license: fontLicense(f, file),
+    embeddable: !os2?.fsType?.noEmbedding && !os2?.fsType?.bitmapOnly,
+    subset: !os2?.fsType?.noSubsetting,
+    bold: (os2?.usWeightClass ?? 400) >= 600 || !!os2?.fsSelection?.bold || /bold|black|heavy/i.test(sub),
+    italic: !!os2?.fsSelection?.italic || f.italicAngle !== 0 || /italic|oblique/i.test(sub),
+    ...classify(f),
+  };
+}
+
 function buildIndex(): { faces: FontFace[]; errors: string[] } {
-  const files: string[] = [];
-  for (const d of config.dirs) listFontFiles(d, files);
-  if (config.system) for (const d of SYSTEM_DIRS) listFontFiles(d, files);
+  const files = new Map<string, FontFace['source']>();
+  const add = (list: string[], source: FontFace['source']) => {
+    for (const f of list) if (!files.has(f)) files.set(f, source);
+  };
+  for (const d of config.dirs) add(listFontFiles(d, []), 'local');
+  for (const d of config.bundled) add(listFontFiles(d, []), 'bundled');
+  if (config.system) {
+    for (const d of SYSTEM_DIRS) add(listFontFiles(d, []), 'system');
+    add(fontconfigFiles(), 'system');
+  }
   const faces: FontFace[] = [];
   const errors: string[] = [];
-  for (const file of files) {
+  for (const [file, source] of files) {
     try {
-      const f = fontkit.openSync(file);
-      if (!('numGlyphs' in f)) continue;
-      const os2 = (f as unknown as { 'OS/2'?: { usWeightClass?: number; fsSelection?: { italic?: boolean; bold?: boolean } } })['OS/2'];
-      const sub = f.subfamilyName ?? '';
-      faces.push({
-        file,
-        postscriptName: f.postscriptName ?? '',
-        family: f.familyName ?? '',
-        bold: (os2?.usWeightClass ?? 400) >= 600 || !!os2?.fsSelection?.bold || /bold|black|heavy/i.test(sub),
-        italic: !!os2?.fsSelection?.italic || f.italicAngle !== 0 || /italic|oblique/i.test(sub),
-        ...classify(f),
-      });
+      const f = fontkit.openSync(file) as fontkit.Font | { fonts: fontkit.Font[] };
+      if ('fonts' in f) f.fonts.forEach((member, i) => faces.push(describe(member, file, source, i)));
+      else faces.push(describe(f, file, source));
     } catch (e) {
       errors.push(`${file}: ${(e as Error).message}`);
     }
   }
   return { faces, errors };
+}
+
+export const faceKey = (f: FontFace): string => (f.face === undefined ? f.file : `${f.file}#${f.face}`);
+
+/** One face of a .ttc/.otc as a standalone sfnt (table directory plus its tables), so pdf-lib can embed it. */
+function extractSfnt(buf: Uint8Array, face: number): Uint8Array<ArrayBuffer> {
+  const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const at = v.getUint32(12 + 4 * face);
+  const n = v.getUint16(at + 4);
+  const head = 12 + 16 * n;
+  const tables = Array.from({ length: n }, (_, i) => ({ off: v.getUint32(at + 12 + 16 * i + 8), len: v.getUint32(at + 12 + 16 * i + 12) }));
+  const out = new Uint8Array(tables.reduce((sum, t) => sum + ((t.len + 3) & ~3), head));
+  const o = new DataView(out.buffer);
+  out.set(buf.subarray(at, at + head));
+  let pos = head;
+  tables.forEach((t, i) => {
+    out.set(buf.subarray(t.off, t.off + t.len), pos);
+    o.setUint32(12 + 16 * i + 8, pos);
+    pos += (t.len + 3) & ~3;
+  });
+  return out;
+}
+
+/** The face's bytes as one font file (.ttf/.otf/.woff/.woff2; a collection member is extracted). */
+export function faceBytes(face: FontFace): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(readFileSync(face.file));
+  return face.face === undefined ? bytes : extractSfnt(bytes, face.face);
 }
 
 export function fontIndex(): { faces: FontFace[]; errors: string[] } {
@@ -144,13 +264,14 @@ export function fontIndex(): { faces: FontFace[]; errors: string[] } {
 }
 
 export function loadFace(face: FontFace): LoadedFace {
-  let l = loadedCache.get(face.file);
+  const key = faceKey(face);
+  let l = loadedCache.get(key);
   if (!l) {
-    const bytes = new Uint8Array(readFileSync(face.file));
+    const bytes = faceBytes(face);
     const font = fontkit.create(Buffer.from(bytes));
-    if (!('numGlyphs' in font)) throw new Error(`${face.file} is a font collection`);
+    if (!('numGlyphs' in font)) throw new Error(`${key} is a font collection`);
     l = { ...face, bytes, font };
-    loadedCache.set(face.file, l);
+    loadedCache.set(key, l);
   }
   return l;
 }
@@ -164,7 +285,7 @@ export function faceCovers(face: LoadedFace, text: string): boolean {
  * style. Only these count as substitutes; anything looser is an S3 fallback.
  */
 export function findSubstitute(req: FontRequest): { face: FontFace; how: 'postscript' | 'family' | 'alias' } | undefined {
-  const { faces } = fontIndex();
+  const faces = fontIndex().faces.filter((f) => f.embeddable);
   const ps = faces.find((f) => f.postscriptName.toLowerCase() === req.name.toLowerCase());
   if (ps) return { face: ps, how: 'postscript' };
   const family = parseFontName(req.name).family;
@@ -190,7 +311,7 @@ export function findFallback(req: FontRequest, text: string): LoadedFace | undef
     (f.bold === req.bold ? 4 : 0) +
     (f.italic === req.italic ? 2 : 0) +
     (group?.includes(normalizeFamily(f.family)) ? 1 : 0);
-  const ranked = [...fontIndex().faces].sort((a, b) => score(b) - score(a) || a.file.localeCompare(b.file));
+  const ranked = fontIndex().faces.filter((f) => f.embeddable).sort((a, b) => score(b) - score(a) || a.file.localeCompare(b.file));
   for (const f of ranked) {
     const l = loadFace(f);
     if (faceCovers(l, text)) return l;

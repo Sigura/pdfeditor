@@ -239,7 +239,7 @@ Implementation notes: `fonts/program.ts` gives one glyph API over TrueType/OpenT
 CFF (`fonts/cff.ts` reads the top DICT, charset and built-in encoding, then wraps the data in a
 minimal `OTTO` sfnt so fontkit interprets the charstrings) and Type1 (`fonts/type1.ts`: eexec,
 charstring interpreter with flex, hint replacement and seac). Bare CFF advances are approximated
-from the glyph bbox, since the wrapper has no hmtx. `fonts/lookup.ts` indexes fonts, and
+from the glyph bbox, since the wrapper has no hmtx. `fonts/lookup.ts` indexes fonts (local, bundled and system; collections face by face, with licence and fsType embedding rights), and
 `edit/emulate.ts` resolves S3 glyphs. In S3, characters the original font has a code for stay real
 text. Outline glyphs are drawn after the text object (`q cm path f Q`), and their 3 Tr copy goes
 inline in the text object, so reading order is kept. Standard-14 fonts have no outlines, so their

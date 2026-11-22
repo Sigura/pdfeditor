@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PageModel, TextRun } from '@pdf-toolkit/shared';
+import { installedFonts, type InstalledFont } from '../lib/api.ts';
 import type { PdfDoc } from '../lib/pdfjs.ts';
 import { useEditor } from './store.ts';
 
@@ -38,6 +39,110 @@ async function samples(pdf: PdfDoc, fonts: { name: string; run: TextRun }[]): Pr
     out[name] = crop.toDataURL('image/png');
   }
   return out;
+}
+
+const sampleFaces = new Map<number, Promise<string>>();
+function loadSample(f: InstalledFont): Promise<string> {
+  let p = sampleFaces.get(f.id);
+  if (!p) {
+    const name = `installed-font-${f.id}`;
+    p = new FontFace(name, `url(/api/fonts/${f.id})`).load().then((face) => (document.fonts.add(face), name));
+    sampleFaces.set(f.id, p);
+  }
+  return p;
+}
+
+/** A sample line in the installed font, fetched once it scrolls into view (CJK fonts are many MB). */
+function Sample({ font }: { font: InstalledFont }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [family, setFamily] = useState<string | null>();
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(([e]) => {
+      if (!e?.isIntersecting) return;
+      io.disconnect();
+      loadSample(font).then(setFamily, () => setFamily(null));
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [font]);
+  if (family === null) return <div className="h-6 text-xs text-slate-400">No preview</div>;
+  return (
+    <div ref={ref} className={family ? 'h-6 truncate' : 'h-6 animate-pulse rounded bg-slate-100'} style={family ? { fontFamily: `"${family}"`, fontSize: 16 } : undefined}>
+      {family && 'The quick brown fox 123'}
+    </div>
+  );
+}
+
+function LicenseBadge({ font }: { font: InstalledFont }) {
+  const { id, free, url } = font.license;
+  if (!free)
+    return (
+      <span data-testid="font-license" className="rounded bg-amber-100 px-1 text-[10px] text-amber-800" title={id === 'unknown' ? 'The font has no licence information: check its terms before sharing the PDF' : 'Not a known free licence: check its terms before sharing the PDF'}>
+        ⚠ {id}
+      </span>
+    );
+  return (
+    <span data-testid="font-license" className={`rounded px-1 text-[10px] ${id === 'MIT' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`} title={url ?? id}>
+      {id}
+    </span>
+  );
+}
+
+/** Fonts the server can embed (font folder, bundled packages, system), grouped by family; restricted-licence faces are disabled. */
+function InstalledFonts({ selected, onPick }: { selected?: string; onPick: (postscriptName: string) => void }) {
+  const [fonts, setFonts] = useState<InstalledFont[]>();
+  const [error, setError] = useState<string>();
+  const [query, setQuery] = useState('');
+  useEffect(() => {
+    installedFonts().then(setFonts, (e: Error) => setError(e.message));
+  }, []);
+  const families = useMemo(() => {
+    const m = new Map<string, InstalledFont[]>();
+    const q = query.trim().toLowerCase();
+    for (const f of fonts ?? []) if (!q || f.family.toLowerCase().includes(q)) m.set(f.family, [...(m.get(f.family) ?? []), f]);
+    return [...m].sort(([a], [b]) => a.localeCompare(b));
+  }, [fonts, query]);
+
+  return (
+    <div data-testid="installed-fonts">
+      <div className="flex items-center gap-2 px-2 pt-2 pb-1">
+        <span className="text-[11px] font-medium whitespace-nowrap text-slate-500 uppercase">Installed{fonts && ` (${families.length})`}</span>
+        <input data-testid="font-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search" className="min-w-0 flex-1 rounded border border-slate-300 px-1 py-0.5 text-xs" />
+      </div>
+      {error && <div className="px-2 text-xs text-red-600">{error}</div>}
+      {!fonts && !error && <div className="mx-2 h-6 animate-pulse rounded bg-slate-100" />}
+      {families.map(([family, faces]) => {
+        const sample = faces.find((f) => !f.bold && !f.italic) ?? faces[0]!;
+        return (
+          <div key={family} className="rounded px-2 py-1 hover:bg-slate-50" data-testid="installed-family" data-family={family}>
+            <div className="flex items-center gap-1 text-xs text-slate-600">
+              <span className="truncate">{family}</span>
+              <LicenseBadge font={sample} />
+              <span className="ml-auto text-[10px] text-slate-400">{sample.source}</span>
+            </div>
+            <Sample font={sample} />
+            <div className="mt-0.5 flex flex-wrap gap-1">
+              {faces.map((f) => (
+                <button
+                  key={f.id}
+                  data-testid="installed-font"
+                  data-ps={f.postscriptName}
+                  disabled={!f.embeddable}
+                  title={f.embeddable ? f.postscriptName : `${f.postscriptName}: the font's licence does not allow embedding it in a PDF`}
+                  onClick={() => onPick(f.postscriptName)}
+                  className={`rounded border px-1 text-[11px] disabled:cursor-not-allowed disabled:line-through disabled:opacity-50 ${selected === f.postscriptName ? 'border-sky-400 bg-sky-100' : 'border-slate-200 hover:bg-sky-50'}`}
+                >
+                  {f.style || f.postscriptName}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 type FontChoice = { fontFamily?: string; fontSize?: number };
@@ -80,7 +185,7 @@ export function FontPicker({ pdf, pages, revision, value, onChange, auto }: { pd
         title="Font size (pt)"
       />
       {open && (
-        <div className="absolute top-full left-0 z-30 mt-1 max-h-96 w-96 overflow-y-auto rounded border border-slate-300 bg-white p-1 shadow-lg">
+        <div className="absolute top-full left-0 z-30 mt-1 max-h-[32rem] w-[28rem] max-w-[calc(100vw-2rem)] overflow-y-auto rounded border border-slate-300 bg-white p-1 shadow-lg">
           {fonts.length > 0 && <div className="px-2 py-1 text-[11px] font-medium text-slate-500 uppercase">Used in this PDF (original glyphs when they cover the text)</div>}
           {fonts.map((f) => (
             <button
@@ -94,13 +199,14 @@ export function FontPicker({ pdf, pages, revision, value, onChange, auto }: { pd
               {imgs[f.name] ? <img src={imgs[f.name]} alt={f.run.text} className="h-6 max-w-full object-contain object-left" /> : <div className="h-6 animate-pulse rounded bg-slate-100" />}
             </button>
           ))}
-          <div className="px-2 pt-2 pb-1 text-[11px] font-medium text-slate-500 uppercase">Standard (embedded from the font folder)</div>
+          <div className="px-2 pt-2 pb-1 text-[11px] font-medium text-slate-500 uppercase">Standard (a metric-compatible font is embedded)</div>
           {GENERIC.map((g) => (
             <button key={g.name} className={`block w-full rounded px-2 py-1 text-left hover:bg-sky-50 ${newText.fontFamily === g.name ? 'bg-sky-100' : ''}`} onClick={() => (setNewText({ fontFamily: g.name }), setOpen(false))}>
               <div className="text-xs text-slate-600">{g.name}</div>
               <div style={{ fontFamily: g.css, fontSize: 16 }}>The quick brown fox 123</div>
             </button>
           ))}
+          <InstalledFonts selected={newText.fontFamily} onPick={(ps) => (setNewText({ fontFamily: ps }), setOpen(false))} />
         </div>
       )}
     </div>
