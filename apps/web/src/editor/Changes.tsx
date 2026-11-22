@@ -21,6 +21,23 @@ export function opPage(op: EditOperation, pages: PageModel[], origPages: PageMod
   return on(pages) ?? ('pageIndex' in op ? op.pageIndex : on(origPages));
 }
 
+/**
+ * Later ops on the pages that the arrange op at `index` added and that its undo takes away: blanks and
+ * copies come from the last arrange op, and later ones only append to the list.
+ */
+export function dependentOps(ops: EditOperation[], index: number, pages: PageModel[], origPages: PageModel[]): number[] {
+  const added = (list: EditOperation[]) => {
+    const last = list.findLast((o) => o.type === 'arrangePages');
+    return last?.type === 'arrangePages' ? last.blanks.length : 0;
+  };
+  const from = origPages.length + added(ops.filter((_, k) => k !== index));
+  const to = origPages.length + added(ops);
+  return ops.flatMap((op, k) => {
+    const page = k > index ? opPage(op, pages, origPages) : undefined;
+    return page !== undefined && page >= from && page < to ? [k] : [];
+  });
+}
+
 const clip = (s: string, n = 28) => {
   const one = s.replace(/\s+/g, ' ').trim();
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
@@ -128,7 +145,14 @@ export function ChangesList() {
                 disabled={busy}
                 title="Undo only this change"
                 data-testid="change-undo"
-                onClick={() => void removeOp(i)}
+                onClick={() => {
+                  const deps = dependentOps(ops, i, pages, origPages);
+                  if (deps.length === 0) return void removeOp(i);
+                  const list = deps.map((k) => k + 1).join(', ');
+                  void askConfirm(`This change added pages that later changes edit. Undo it together with change${deps.length > 1 ? 's' : ''} ${list}?`, 'Undo all').then((yes) => {
+                    if (yes) void removeOp(i, deps);
+                  });
+                }}
               >
                 ✕
               </button>

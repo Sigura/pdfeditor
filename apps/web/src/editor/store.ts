@@ -128,7 +128,8 @@ export type EditorState = {
   /** Appends deskewPage ops (the last one per page wins; angle 0 straightens nothing). */
   deskew: (ops: Extract<EditOperation, { type: 'deskewPage' }>[]) => Promise<void>;
   /** Undoes one op anywhere in the list (later ops that depend on it make the server reject the change). */
-  removeOp: (index: number) => Promise<void>;
+  /** Undoes the op at `index`, together with the ops at `also` (later ops that depend on it). */
+  removeOp: (index: number, also?: number[]) => Promise<void>;
   /** Undoes every op; one redo brings them all back. */
   revertAll: () => Promise<void>;
   /** Moves the selected box by (dx, dy); consecutive nudges are sent as one moveElement. */
@@ -343,16 +344,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     }, 'replace');
     if (ok) set((s) => ({ redoStack: [...s.redoStack, undone] }));
   },
-  removeOp: async (index) => {
+  removeOp: async (index, also = []) => {
     clearTimeout(nudgeTimer);
     set({ nudge: null });
     const { ops } = get();
-    const target = JSON.stringify(ops[index]);
-    // An earlier queued request may have replaced the list; find the op again by value.
+    const indexes = [index, ...also];
+    const targets = indexes.map((i) => JSON.stringify(ops[i]));
+    // An earlier queued request may have replaced the list; find the ops again by value.
     const keep = () => {
       const cur = get().ops;
-      const i = cur === ops ? index : cur.findIndex((o) => JSON.stringify(o) === target);
-      return i < 0 ? null : withoutStaleLayouts(cur.filter((_, k) => k !== i), deskewedPages([cur[i]!]));
+      const found = cur === ops ? indexes : targets.map((t) => cur.findIndex((o) => JSON.stringify(o) === t));
+      if (found.some((i) => i < 0)) return null;
+      return withoutStaleLayouts(cur.filter((_, k) => !found.includes(k)), deskewedPages(found.map((i) => cur[i]!)));
     };
     if (await send(get, keep, 'replace')) set({ redoStack: [] });
     else set((st) => ({ error: `Change ${index + 1} can't be undone on its own (a later change depends on it): ${st.error}` }));
