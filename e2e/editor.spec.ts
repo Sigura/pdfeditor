@@ -958,3 +958,26 @@ test('dropping several PDFs on the editor offers to combine them in Merge & Page
   await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByTestId('merge-page')).toHaveCount(3);
 });
+
+test('a reload reopens the document with its changes; an expired one says so', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  await page.getByTestId('text-box').first().click();
+  await page.keyboard.press('ArrowRight');
+  await expect(changes(page)).toHaveCount(1);
+  await page.reload();
+  await expect(page.getByRole('tab', { name: 'Edit', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('overlay')).toBeVisible();
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('Move');
+  await expect(page.getByTestId('unsaved')).toBeVisible();
+  await page.keyboard.press('Control+z');
+  await expect(changes(page)).toHaveCount(0);
+
+  await page.route('**/api/documents/*?originalPages=1', (route) => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'NOT_FOUND', message: 'This document has expired. Reopen the file.' } }) }));
+  await page.reload();
+  await expect(page.getByTestId('editor-error')).toContainText('This document has expired');
+  await expect(page.getByTestId('editor-dropzone')).toBeVisible();
+  await page.unroute('**/api/documents/*?originalPages=1');
+  await page.reload();
+  await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'true');
+});

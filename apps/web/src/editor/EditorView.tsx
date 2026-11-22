@@ -7,7 +7,7 @@ import { opPage } from './Changes.tsx';
 import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
-import { arrangement, hasUnsaved, pageNo, pageOrder, track, useEditor } from './store.ts';
+import { arrangement, hasUnsaved, pageNo, pageOrder, resumeDocument, track, useEditor } from './store.ts';
 import { StraightenBar, TiltBanner } from './Deskew.tsx';
 
 /** `content` identifies what the page shows: the thumbnail is rendered again only when it changes. */
@@ -462,6 +462,8 @@ export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }
   downloadNow.current = () => {
     if (!downloading) void download(downloadBlob, true);
   };
+
+  useEffect(() => void resumeDocument(), []);
 
   useEffect(() => {
     // Read from the store, not the render: StrictMode runs the effect twice with the same render.

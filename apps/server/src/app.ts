@@ -38,6 +38,18 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     }
     return a;
   };
+  // The page models of the upload, before any edit (cached at upload, recomputed if evicted).
+  const originalAnalysis = (docId: string): Promise<PdfAnalysis> => {
+    const key = `${docId}@0`;
+    let a = analyses.get(key);
+    if (!a) {
+      a = store.original(docId).then((bytes) => analyzePdf(bytes));
+      analyses.set(key, a);
+      a.catch(() => analyses.delete(key));
+      if (analyses.size > 50) analyses.delete(analyses.keys().next().value!);
+    }
+    return a;
+  };
 
   app.get('/api/health', (c) => c.json({ ok: true, limits: { maxFileBytes: config.maxFileBytes, maxFiles: config.maxFiles } }));
 
@@ -137,7 +149,7 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
   app.get('/api/documents/:id', async (c) => {
     const id = c.req.param('id');
     const [meta, analysis] = await Promise.all([store.meta(id), analysisOf(id)]);
-    const body: DocumentInfo & { revision: number; ops: unknown[]; reports: unknown[]; warnings: string[] } = {
+    const body: DocumentInfo & { revision: number; ops: unknown[]; reports: unknown[]; warnings: string[]; origPages?: unknown[] } = {
       docId: id,
       fileName: meta.fileName,
       pageCount: analysis.pageCount,
@@ -147,6 +159,8 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
       reports: meta.reports,
       warnings: meta.warnings,
     };
+    // ?originalPages=1: also the page models before any edit, to resume editing after a reload.
+    if (c.req.query('originalPages') === '1') body.origPages = (await originalAnalysis(id)).pages;
     return c.json(body);
   });
 

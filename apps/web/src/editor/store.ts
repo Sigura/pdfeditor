@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { displayOrder, type ArrangePages, type CellSpan, type EditOperation, type EditResult, type PageModel, type PageOverflow, type Point, type Rect, type Ruling, type StrategyReport, type TableSetup } from '@pdf-toolkit/shared';
-import { postEdits } from '../lib/api.ts';
+import { displayOrder, type ArrangePages, type DocumentInfo, type CellSpan, type EditOperation, type EditResult, type PageModel, type PageOverflow, type Point, type Rect, type Ruling, type StrategyReport, type TableSetup } from '@pdf-toolkit/shared';
+import { apiError, postEdits } from '../lib/api.ts';
 import { track } from '../lib/progress.tsx';
 import { measureScanLayouts, moveOp } from './background.ts';
 
@@ -367,7 +367,45 @@ export const useEditor = create<EditorState>((set, get) => ({
   rendered: () => set((s) => ({ renderCount: s.renderCount + 1 })),
 }));
 
-// The document lives on the server only for the session's TTL and the page keeps no handle to it.
+const SAVED = 'pdf-toolkit:document';
+type Saved = { docId: string; downloadedRevision: number };
+
+/** The document open before a reload of this tab, if any (the server keeps it for the TTL after its last use). */
+export const savedDocument = (): Saved | null => JSON.parse(sessionStorage.getItem(SAVED) ?? 'null') as Saved | null;
+
+useEditor.subscribe((s, prev) => {
+  if (s.docId === prev.docId && s.downloadedRevision === prev.downloadedRevision) return;
+  if (s.docId) sessionStorage.setItem(SAVED, JSON.stringify({ docId: s.docId, downloadedRevision: s.downloadedRevision } satisfies Saved));
+  else sessionStorage.removeItem(SAVED);
+});
+
+let resuming: Promise<void> | undefined;
+/** Opens the document of `savedDocument()` again, with its changes; forgets it when the server no longer has it. Runs once per page load. */
+export const resumeDocument = () => (resuming ??= resume());
+
+async function resume(): Promise<void> {
+  const saved = savedDocument();
+  if (!saved || useEditor.getState().docId) return;
+  const st = useEditor.getState();
+  st.setBusy(true);
+  try {
+    const res = await track('Reopening the document…', () => fetch(`/api/documents/${saved.docId}?originalPages=1`));
+    if (!res.ok) {
+      sessionStorage.removeItem(SAVED);
+      throw await apiError(res);
+    }
+    // A file opened meanwhile wins.
+    if (useEditor.getState().docId) return;
+    const d = (await res.json()) as DocumentInfo & { revision: number; ops: EditOperation[]; reports: StrategyReport[]; warnings: string[]; origPages: PageModel[] };
+    useEditor.setState({ ...initial, docId: d.docId, fileName: d.fileName, pages: d.pages, origPages: d.origPages, revision: d.revision, ops: d.ops, reports: d.reports, warnings: d.warnings, downloadedRevision: saved.downloadedRevision });
+  } catch (e) {
+    useEditor.getState().setError(`The document open before the reload couldn't be reopened: ${(e as Error).message}`);
+  } finally {
+    useEditor.getState().setBusy(false);
+  }
+}
+
+// Closing the tab drops the handle to the document, and a reload only finds it while the server keeps it.
 window.addEventListener('beforeunload', (e) => {
   const s = useEditor.getState();
   if (!hasUnsaved(s)) return;

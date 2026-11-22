@@ -3,7 +3,7 @@
 ## Page model (read-only, phase 2)
 
 - `POST /api/documents` (multipart `file`, optional `password`) returns `{ docId, fileName, pageCount, pages: PageModel[] }`.
-- `GET /api/documents/:id` returns the same data plus `revision`, `ops` and `reports`.
+- `GET /api/documents/:id` returns the same data plus `revision`, `ops` and `reports`; with `?originalPages=1` also `origPages`, the page models before any edit. The *Edit* tab keeps the open `docId` in sessionStorage and reopens the document with its changes after a reload, while the server still has it.
 - `GET /api/documents/:id/pages/:n/model` returns one page model (0-based `n`).
 - `GET /api/documents/:id/pdf` returns the current revision inline. `GET /api/documents/:id/download` returns it as an attachment.
 

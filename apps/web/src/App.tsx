@@ -3,7 +3,7 @@ import { MergeView } from './merge/MergeView.tsx';
 import { EditorView } from './editor/EditorView.tsx';
 import { Dialogs } from './lib/Dialogs.tsx';
 import { StatusBar } from './lib/progress.tsx';
-import { hasUnsaved, pageNo, pageOrder, useEditor } from './editor/store.ts';
+import { hasUnsaved, pageNo, pageOrder, savedDocument, useEditor } from './editor/store.ts';
 import { BLANK, useMergeStore } from './merge/store.ts';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -26,7 +26,7 @@ const TAB_LABEL = { merge: 'Merge & Pages', edit: 'Edit' };
 type Tab = 'merge' | 'edit';
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('merge');
+  const [tab, setTab] = useState<Tab>(() => (savedDocument() ? 'edit' : 'merge'));
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-center gap-6 border-b border-slate-200 bg-white px-4 py-2">
