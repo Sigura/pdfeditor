@@ -35,6 +35,28 @@ describe('mergePdfs', () => {
     expect(out.getPage(0).node.Contents()).toBeUndefined();
   });
 
+  it('copies output pages sharing content and resources, with their own links', async () => {
+    const a = await makePdf(2, 'A', { size: [300, 400], rotate: 90 });
+    addInternalLink(a, a.getPage(1), a.getPage(0));
+    const bytes = await mergePdfs([{ blank: true }, { copy: 0 }, { file: await a.save() }, { copy: 3 }, { copy: -1 }, { copy: 1 }]);
+    const out = await PDFDocument.load(bytes);
+    expect(out.getPageCount()).toBe(7);
+    const [, , , src, c1, c2] = out.getPages();
+    for (const c of [c1!, c2!]) {
+      // Same object numbers = shared objects.
+      expect(String(c.node.get(PDFName.of('Contents')))).toBe(String(src!.node.get(PDFName.of('Contents'))));
+      expect(String(c.node.Resources()!.get(PDFName.of('Font')))).toBe(String(src!.node.Resources()!.get(PDFName.of('Font'))));
+      expect(c.getRotation().angle).toBe(90);
+      const link = c.node.Annots()!.lookup(0, PDFDict);
+      expect(link).not.toBe(src!.node.Annots()!.lookup(0, PDFDict));
+      expect(link.get(PDFName.of('P'))).toBe(c.ref);
+      expect(link.lookup(PDFName.of('Dest'), PDFArray).get(0)).toBe(out.getPage(2).ref);
+    }
+    // Copies of the leading blank: sized like the first real page as shown, before and after it.
+    for (const k of [0, 1, 6]) expect(out.getPage(k).getSize()).toEqual({ width: 400, height: 300 });
+    await expect(mergePdfs([{ copy: 0 }])).rejects.toThrow(/0 pages come before it/);
+  });
+
   it('remaps internal links and drops links to excluded pages without orphan page copies', async () => {
     const a = await makePdf(3, 'A');
     addInternalLink(a, a.getPage(0), a.getPage(2));

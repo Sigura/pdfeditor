@@ -34,7 +34,7 @@ const INHERITED = ['Resources', 'MediaBox', 'CropBox', 'Rotate'].map((k) => PDFN
  * page content stream, but patches a Form XObject in place, so forms (and forms inside them) are cloned.
  * Only link annotations are copied: widgets belong to form fields, markup annotations pair with popups.
  */
-function copyPage(doc: PDFDocument, k: number): void {
+export function copyPage(doc: PDFDocument, k: number): void {
   const ctx = doc.context;
   const src = doc.getPage(k).node;
   const leaf = src.clone();

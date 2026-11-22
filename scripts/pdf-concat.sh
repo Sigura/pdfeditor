@@ -7,7 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
   echo "Usage: $0 -o <out.pdf> <input>... [--password <file>=<pw>]..." >&2
-  echo "  input: <file>[:<ranges>][@90|@180|@270], or 'blank' for an empty page" >&2
+  echo "  input: <file>[:<ranges>][@90|@180|@270], 'blank' for an empty page," >&2
+  echo "         or 'copy' / 'copy:<n>' for a copy of the page before / of output page n" >&2
   echo "  e.g.   $0 -o out.pdf a.pdf b.pdf:1-3 scan.pdf@90 blank c.pdf:2-" >&2
   exit 2
 }
@@ -34,7 +35,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 && "$2" == *=* ]] || usage
       args+=(--password "$(abs "${2%%=*}")=${2#*=}"); shift 2 ;;
     -h|--help) usage ;;
-    blank) args+=(blank); shift ;;
+    blank|copy|copy:[0-9]*) args+=("$1"); shift ;;
     *)
       file="$1"
       [[ "$file" =~ ^(.+)@(90|180|270)$ ]] && file="${BASH_REMATCH[1]}"

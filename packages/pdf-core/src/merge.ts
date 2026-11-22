@@ -18,6 +18,7 @@ import { parsePageRanges } from './ranges.ts';
 import { loadPdf } from './load.ts';
 import { PdfError } from './errors.ts';
 import { snapshotObjects, writeIncremental } from './save/incremental.ts';
+import { copyPage } from './edit/deskew.ts';
 
 export type MergeInput = {
   file: Uint8Array;
@@ -31,6 +32,8 @@ export type MergeInput = {
 };
 /** An empty page the size of the page before it as shown (the page after it when it comes first; A4 if there is none). */
 export type BlankPage = { blank: true };
+/** A copy of output page `copy` (0-based, an earlier page; negative counts back, -1 = the page before) that shares content, fonts and images with it, as the editor's duplicate does. */
+export type CopyPage = { copy: number };
 const A4: [number, number] = [595.28, 841.89];
 
 const PLACEHOLDER = 'PdfToolkitSrcPage';
@@ -67,7 +70,7 @@ export async function arrangePdf(bytes: Uint8Array, order: { page: number; rotat
   return snapshot ? writeIncremental(bytes, doc.context, snapshot) : doc.save({ useObjectStreams: false });
 }
 
-export async function mergePdfs(inputs: (MergeInput | BlankPage)[]): Promise<Uint8Array> {
+export async function mergePdfs(inputs: (MergeInput | BlankPage | CopyPage)[]): Promise<Uint8Array> {
   if (inputs.length === 0) throw new PdfError('INVALID_RANGE', 'No input files');
   const out = await PDFDocument.create({ updateMetadata: false });
   out.setProducer('pdf-toolkit');
@@ -87,6 +90,18 @@ export async function mergePdfs(inputs: (MergeInput | BlankPage)[]): Promise<Uin
     if ('blank' in input) {
       const last = out.getPageCount() ? out.getPage(out.getPageCount() - 1) : null;
       if (last) out.addPage(shownSize(last));
+      else leadingBlanks++;
+      continue;
+    }
+    if ('copy' in input) {
+      const count = leadingBlanks + out.getPageCount();
+      const target = input.copy < 0 ? count + input.copy : input.copy;
+      if (!Number.isInteger(target) || target < 0 || target >= count)
+        throw new PdfError('INVALID_RANGE', `Copy of ${input.copy < 0 ? `the page ${-input.copy} back` : `page ${input.copy + 1}`}: ${count} page${count === 1 ? ' comes' : 's come'} before it`);
+      const k = target - leadingBlanks;
+      // A leading blank only gets its size once the first real page exists.
+      if (k >= 0) copyPage(out, k);
+      else if (out.getPageCount()) out.addPage(shownSize(out.getPage(0)));
       else leadingBlanks++;
       continue;
     }
