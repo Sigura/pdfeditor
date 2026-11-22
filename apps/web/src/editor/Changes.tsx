@@ -26,7 +26,7 @@ const clip = (s: string, n = 28) => {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 
-function describe(op: EditOperation, name: string): string {
+function describe(op: EditOperation, name: string, before: EditOperation[]): string {
   switch (op.type) {
     case 'replaceText':
       return `Edit text → “${clip(op.text)}”`;
@@ -58,8 +58,12 @@ function describe(op: EditOperation, name: string): string {
       return `Scan layout of page ${op.pageIndex + 1} (${op.lines.length} lines)`;
     case 'deskewPage':
       return `Straighten page by ${op.angle.toFixed(2)}°`;
-    case 'arrangePages':
+    case 'arrangePages': {
+      const prev = before.findLast((o) => o.type === 'arrangePages');
+      const added = op.blanks.at(-1);
+      if (added && 'copy' in added && op.blanks.length === (prev?.blanks.length ?? 0) + 1) return `Duplicate page ${op.order.findIndex((e) => e.page === added.copy) + 1}`;
       return `Arrange pages (${op.order.length} pages)`;
+    }
     case 'resizeTable':
       return `Resize table ${op.colWidths ? 'columns' : ''}${op.colWidths && op.rowHeights ? ' and ' : ''}${op.rowHeights ? 'rows' : ''}`;
   }
@@ -116,7 +120,7 @@ export function ChangesList() {
                 }}
               >
                 <span className="mr-1 text-slate-400 tabular-nums">{i + 1}.</span>
-                {describe(op, nameOf(target))}
+                {describe(op, nameOf(target), ops.slice(0, i))}
                 {page !== undefined && pageNo({ ops, pages }, page) > 0 && <span className="ml-1 text-slate-400">p{pageNo({ ops, pages }, page)}</span>}
               </button>
               <button

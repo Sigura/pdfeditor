@@ -9,7 +9,7 @@ import { planFlow, type FlowPage } from '../src/edit/paging.ts';
 import { configureFonts } from '../src/fonts/lookup.ts';
 import { loadPdf } from '../src/load.ts';
 import { analyzeDocument, pageContentBytes } from '../src/model/extract.ts';
-import { PDFDict, PDFName, PDFNumber, PDFRef, PDFStream } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRef, PDFStream } from 'pdf-lib';
 import { INK_ASCENT_EM, edgeRole, junctionType, meshEdges, type Mesh, type Table } from '@pdf-toolkit/shared';
 import { rasterDiff, rasterize } from './helpers.ts';
 
@@ -901,6 +901,35 @@ describe('table paging (paged-table.pdf)', () => {
     ]);
     expect(texts[0]!.map((x) => x.str)).not.toContain('Copy Report');
     await expect(applyEdits(original, [{ ...arrange, blanks: [{ copy: 2 }] }])).rejects.toThrow(/page 3 to copy does not exist/);
+  });
+
+  it('a copy shares images with its source; text inside a Form XObject is edited on the copy only', async () => {
+    const scan = fixture('paged-scan.pdf');
+    const n = (await loadPdf(scan)).doc.getPageCount();
+    const copied = await applyEdits(scan, [{ type: 'arrangePages', order: [{ page: 0 }, { page: n }], blanks: [{ copy: 0 }] }]);
+    const { doc } = await loadPdf(copied.bytes);
+    const images = (k: number) => {
+      const xo = doc.getPage(k).node.Resources()!.lookup(PDFName.of('XObject'), PDFDict);
+      return xo.entries().filter(([name]) => xo.lookup(name, PDFStream).dict.get(PDFName.of('Subtype'))?.toString() === '/Image').map(([, v]) => v.toString());
+    };
+    expect(images(0).length).toBeGreaterThan(0);
+    expect(images(n)).toEqual(images(0));
+    expect(copied.bytes.length - scan.length).toBeLessThan(2000);
+
+    const src = await PDFDocument.create();
+    const [form] = await src.embedPdf(fixture('latin-standard14.pdf'), [0]);
+    src.addPage([form!.width, form!.height]).drawPage(form!);
+    const formPdf = await src.save({ useObjectStreams: false });
+    const arrange = { type: 'arrangePages' as const, order: [{ page: 0 }, { page: 1 }], blanks: [{ copy: 0 }] };
+    const box = (await applyEdits(formPdf, [arrange])).pages[1]!.textBoxes.find((b) => b.text === 'Quarterly Report')!;
+    expect(box.id).toMatch(/xobj/);
+    const res = await applyEdits(formPdf, [arrange, { type: 'replaceText', elementId: box.id, text: 'Copy Report' }]);
+    expect(res.reports).toMatchObject([{ strategy: 'original' }]);
+    expect(res.warnings.join(' ')).not.toMatch(/painted/);
+    const texts = (await pageTexts(res.bytes)).map((p) => p.map((x) => x.str));
+    expect(texts[0]).toContain('Quarterly Report');
+    expect(texts[0]).not.toContain('Copy Report');
+    expect(texts[1]).toContain('Copy Report');
   });
 
   it('past the last page: needsPage until the user picks; copy repeats the header/footer bands, empty does not; the table is split under one id; save → reopen', async () => {

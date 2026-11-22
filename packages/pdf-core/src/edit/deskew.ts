@@ -1,4 +1,4 @@
-import { PDFName, type PDFDocument } from 'pdf-lib';
+import { PDFDict, PDFName, PDFPage, PDFRawStream, PDFRef, type PDFContext, type PDFDocument } from 'pdf-lib';
 import type { DeskewPage, EditOperation } from '@pdf-toolkit/shared';
 import { PdfError } from '../errors.ts';
 import { loadPdf } from '../load.ts';
@@ -19,13 +19,66 @@ export async function addArrangedPages(doc: PDFDocument, ops: EditOperation[]): 
     if ('copy' in b) {
       const count = doc.getPageCount();
       if (b.copy >= count) throw new PdfError('INVALID_EDIT', `arrangePages: page ${b.copy + 1} to copy does not exist (${count} pages)`);
-      const [copy] = await doc.copyPages(doc, [b.copy]);
-      doc.addPage(copy!);
+      copyPage(doc, b.copy);
     } else {
       const page = doc.addPage([b.width, b.height]);
       page.node.set(PDFName.of('Contents'), doc.context.register(doc.context.stream('')));
     }
   }
+}
+
+const INHERITED = ['Resources', 'MediaBox', 'CropBox', 'Rotate'].map((k) => PDFName.of(k));
+
+/**
+ * Appends a copy of page k that shares content streams, fonts and images with it: an edit writes a new
+ * page content stream, but patches a Form XObject in place, so forms (and forms inside them) are cloned.
+ * Only link annotations are copied: widgets belong to form fields, markup annotations pair with popups.
+ */
+function copyPage(doc: PDFDocument, k: number): void {
+  const ctx = doc.context;
+  const src = doc.getPage(k).node;
+  const leaf = src.clone();
+  for (const key of INHERITED) {
+    const v = leaf.get(key) ? undefined : src.getInheritableAttribute(key);
+    if (v) leaf.set(key, v);
+  }
+  leaf.delete(PDFName.of('Parent'));
+  const res = leaf.lookup(PDFName.of('Resources'));
+  if (res instanceof PDFDict) leaf.set(PDFName.of('Resources'), withOwnForms(ctx, res, new Map()));
+  const ref = ctx.register(leaf);
+  const annots = src.Annots();
+  leaf.delete(PDFName.of('Annots'));
+  const links = (annots?.asArray() ?? []).flatMap((a) => {
+    const d = ctx.lookup(a);
+    if (!(d instanceof PDFDict) || d.get(PDFName.of('Subtype'))?.toString() !== '/Link') return [];
+    const c = d.clone(ctx);
+    c.set(PDFName.of('P'), ref);
+    return [ctx.register(c)];
+  });
+  if (links.length) leaf.set(PDFName.of('Annots'), ctx.obj(links));
+  doc.addPage(PDFPage.of(leaf, ref, doc));
+}
+
+function withOwnForms(ctx: PDFContext, res: PDFDict, done: Map<PDFRef, PDFRef>): PDFDict {
+  const xobjects = res.lookup(PDFName.of('XObject'));
+  if (!(xobjects instanceof PDFDict)) return res;
+  const out = res.clone(ctx);
+  const own = xobjects.clone(ctx);
+  for (const [name, v] of xobjects.entries()) {
+    const form = v instanceof PDFRef ? ctx.lookup(v) : undefined;
+    if (!(v instanceof PDFRef) || !(form instanceof PDFRawStream) || form.dict.get(PDFName.of('Subtype'))?.toString() !== '/Form') continue;
+    let copy = done.get(v);
+    if (!copy) {
+      const c = form.clone(ctx);
+      copy = ctx.register(c);
+      done.set(v, copy);
+      const inner = c.dict.lookup(PDFName.of('Resources'));
+      if (inner instanceof PDFDict) c.dict.set(PDFName.of('Resources'), withOwnForms(ctx, inner, done));
+    }
+    own.set(name, copy);
+  }
+  out.set(PDFName.of('XObject'), own);
+  return out;
 }
 
 /** Replaces each deskewed page's content with one stream: paper fill, then the old content rotated about the crop box centre. */
