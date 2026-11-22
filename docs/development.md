@@ -31,6 +31,17 @@ On the host, forward the ports once (`PORTS=( 3001 5173 )` in `.devbox.conf`, th
 
 Server environment variables: `PORT` (3001), `DATA_DIR` (`apps/server/data`), `MAX_FILE_MB` (50), `MAX_FILES` (20), `DOC_TTL_MIN` (60).
 
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and on pushes to `main`, in two jobs:
+
+- **check** (ubuntu-latest): `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm build`, `pnpm test`. Commit `pnpm-lock.yaml` with any dependency change, or the install fails.
+- **e2e** (ubuntu-24.04, because Playwright 1.56 can't install Chromium's dependencies on ubuntu-latest = 26.04): installs Chromium with `playwright install --with-deps`, then `pnpm test:e2e`. On failure, the `playwright-report` artifact holds the report, traces and screenshots for 7 days.
+
+Rendering is the same on CI and locally because the web pdf.js never uses system fonts: non-embedded standard-14 fonts come from pdfjs-dist's bundled `standard_fonts` (`useSystemFonts: false` in `apps/web/src/lib/pdfjs.ts`). Without that, a machine with different fonts (DejaVu in the container, others on the runner) measures scanned-table ink differently and the ink e2e checks drift.
+
+A new push to the same branch cancels the run still in progress.
+
 ## Fixtures
 
 `fixtures/generate.ts` builds the sample files deterministically:
