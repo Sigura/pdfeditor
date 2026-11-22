@@ -434,13 +434,23 @@ test('paging: a cut table asks about its header rows; rows pushed past the last 
   await expect(changes(page)).toHaveCount(before + 1);
   await page.unroute('**/api/documents/*/edits');
 
-  // The added page: content continued from page 2, marked, and no new text can be placed there.
+  // The added page: content continued from page 2, marked. New text there belongs to page 2, placed
+  // where that content lies before the flow, and shows where it was clicked.
   await thumbs.nth(2).click();
   await expect(page.getByTestId('flow-in')).toHaveCount(1);
   await page.getByRole('button', { name: 'Add text' }).click();
-  await page.getByTestId('overlay').click({ position: { x: 300, y: 300 } });
-  await expect(page.getByTestId('editor-error')).toContainText('continued from an earlier page');
-  await expect(changes(page)).toHaveCount(before + 1);
+  const ov = (await page.getByTestId('overlay').boundingBox())!;
+  const hatch = (await page.getByTestId('flow-in').boundingBox())!;
+  const added = page.waitForResponse((r) => r.url().endsWith('/edits') && r.request().postDataJSON().ops[0]?.type === 'addTextBox');
+  await page.getByTestId('overlay').click({ position: { x: ov.width * (20 / 595), y: hatch.y - ov.y + hatch.height / 2 } });
+  const res = await added;
+  const op = res.request().postDataJSON().ops[0];
+  expect(op.pageIndex).toBe(1);
+  const box = (await res.json()).pages[2].textBoxes.find((b: { id: string }) => b.id === op.id);
+  const clickY = 842 * (1 - hatch.height / 2 / ov.height - (hatch.y - ov.y) / ov.height);
+  expect(box.bbox.y1).toBeCloseTo(clickY, 0);
+  await expect(page.getByTestId('editor-error')).toHaveCount(0);
+  await expect(changes(page)).toHaveCount(before + 2);
 });
 
 test('paging on a scan: the layout is measured in the browser, sent with the change, and the copy page gets the scan bands', async ({ page }) => {

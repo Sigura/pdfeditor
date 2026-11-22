@@ -107,6 +107,8 @@ export const PageModelSchema = z.object({
   warnings: z.array(z.string()),
   /** Areas holding content continued from earlier pages (their elements keep their ids). */
   flowIn: z.array(RectSchema).optional(),
+  /** Where the content in flowIn comes from: page `src`, its band y0..y1 (this page's coordinates) drawn shifted by `dy`. */
+  flowFrom: z.array(z.object({ src: z.number().int(), y0: z.number(), y1: z.number(), dy: z.number() })).optional(),
   /** Page added by the flow after the last original page. */
   added: z.boolean().optional(),
 });

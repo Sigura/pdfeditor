@@ -513,7 +513,11 @@ export function flowModels(models: PageModel[], plan: FlowPlan): PageModel[] {
     }
   });
   plan.pages.forEach((pp, k) => {
-    if (pp?.flowIn.length) out[k]!.flowIn = pp.flowIn;
+    if (!pp?.flowIn.length) return;
+    out[k]!.flowIn = pp.flowIn;
+    const inside = (y0: number, y1: number) => pp.flowIn.some((r) => y1 > r.y0 && y0 < r.y1);
+    const from = pp.draws.filter((d) => d.src !== k && !d.repeat && !d.edge && inside(d.y0 + d.dy, d.y1 + d.dy));
+    if (from.length) out[k]!.flowFrom = from.map((d) => ({ src: d.src, y0: d.y0 + d.dy, y1: d.y1 + d.dy, dy: d.dy }));
   });
   return out;
 }

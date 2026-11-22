@@ -287,6 +287,8 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   // Content continued from earlier pages, and pages the flow added, belong to the pages they came from.
   const inFlow = (px: number, py: number) => !!model.added || !!model.flowIn?.some((r) => px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1);
   const flowError = () => useEditor.getState().setError('This area holds content continued from an earlier page: edit it there, or use the cells and boxes shown here.');
+  // New content in a flowed area belongs to the page that content came from, where it lies dy lower.
+  const flowSource = (py: number) => model.flowFrom?.find((f) => py >= f.y0 && py <= f.y1);
 
   const onPageMouseDown = (e: React.MouseEvent) => {
     if (tool !== 'table' || tableSetup || !vp) return;
@@ -316,12 +318,15 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
     if (tool !== 'addText' || !vp) return select(null);
     const [x, y] = local(e);
     const [px, py] = vp.convertToPdfPoint(x, y);
-    if (inFlow(px, py)) return flowError();
+    const from = inFlow(px, py) ? flowSource(py) : undefined;
+    if (inFlow(px, py) && !from) return flowError();
     const id = `n-${Date.now().toString(36)}`;
     const size = newText.fontSize;
     const bbox = { x0: px, y0: py - size * 1.4, x1: Math.min(px + 200, model.view.x1), y1: py };
     const background = fillAt(model, bbox, null);
-    void edit([{ type: 'addTextBox', id, pageIndex: model.pageIndex, bbox, text: 'New text', fontSize: size, fontFamily: newText.fontFamily, ...(background && { background }) }], () => {
+    const dy = from?.dy ?? 0;
+    const at = { ...bbox, y0: bbox.y0 - dy, y1: bbox.y1 - dy };
+    void edit([{ type: 'addTextBox', id, pageIndex: from?.src ?? model.pageIndex, bbox: at, text: 'New text', fontSize: size, fontFamily: newText.fontFamily, ...(background && { background }) }], () => {
       setTool('select');
       startEditing(id);
     });
