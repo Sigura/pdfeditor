@@ -1,0 +1,210 @@
+import { useEffect, useRef, useState } from 'react';
+import type { DocumentInfo } from '@pdf-toolkit/shared';
+import { apiError, downloadBlob } from '../lib/api.ts';
+import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
+import { opPage } from './Changes.tsx';
+import { FontPicker } from './FontPicker.tsx';
+import { Inspector } from './Inspector.tsx';
+import { PageView } from './PageView.tsx';
+import { useEditor } from './store.ts';
+
+function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    renderThumbnail(pdf, index + 1, 220).then((u) => alive && setSrc(u), () => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [pdf, index, revision]);
+  return (
+    <button onClick={onClick} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
+      {src ? <img src={src} alt={`Page ${index + 1}`} className="w-full bg-white shadow" /> : <div className="h-36 animate-pulse bg-slate-200" />}
+      <div className="mt-1 text-center text-xs text-slate-600">{index + 1}</div>
+      {changes > 0 && (
+        <span data-testid="thumb-changes" title={`${changes} change${changes > 1 ? 's' : ''} on this page`} className="absolute top-0 right-0 min-w-4 rounded-full bg-amber-500 px-1 text-[10px] leading-4 text-white">
+          {changes}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Keep/Cancel for content pushed past the page bottom; Shrink/Cancel for a column that doesn't fit the page. */
+function PromptDialog() {
+  const { prompt, setPrompt, revert, edit, busy } = useEditor();
+  if (!prompt) return null;
+  const [text, yes, onYes, no, onNo] =
+    prompt.kind === 'overflow'
+      ? [`Content on page ${prompt.pageIndex + 1} now exceeds the page bottom by ${prompt.by.toFixed(1)} pt.`, 'Keep', () => setPrompt(null), 'Cancel', () => void revert(prompt.count)]
+      : [`The new column would make the table exceed the page width by ${prompt.by.toFixed(1)} pt. Shrink the other columns proportionally (text wraps, font size stays) or cancel?`, 'Shrink other columns', () => (setPrompt(null), void edit([{ ...prompt.op, fit: 'shrink' }])), 'Cancel', () => setPrompt(null)];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" data-testid="prompt">
+      <div className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl">
+        <p className="mb-3">{text}</p>
+        <div className="flex justify-end gap-2">
+          <button className="rounded px-3 py-1.5 hover:bg-slate-100" disabled={busy} onClick={onNo}>
+            {no}
+          </button>
+          <button className="rounded bg-sky-600 px-3 py-1.5 text-white" disabled={busy} onClick={onYes}>
+            {yes}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function EditorView() {
+  const st = useEditor();
+  const [pdf, setPdf] = useState<PdfDoc | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!st.docId) return;
+    let alive = true;
+    let loaded: PdfDoc | null = null;
+    void (async () => {
+      const res = await fetch(`/api/documents/${st.docId}/pdf?rev=${st.revision}`);
+      if (!res.ok) throw await apiError(res);
+      loaded = await openPdf(new Uint8Array(await res.arrayBuffer()));
+      if (alive) setPdf(loaded);
+      else void loaded.destroy();
+    })().catch((e: Error) => useEditor.getState().setError(e.message));
+    return () => {
+      alive = false;
+      if (loaded) void loaded.destroy();
+    };
+  }, [st.docId, st.revision]);
+
+  const upload = async (file: File, password?: string) => {
+    st.setBusy(true);
+    st.setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      if (password) form.append('password', password);
+      const res = await fetch('/api/documents', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await apiError(res);
+        if (/\((ENCRYPTED|BAD_PASSWORD)\)/.test(err.message)) {
+          const pw = window.prompt(`${file.name}: ${err.message}\nPassword:`);
+          if (pw !== null) return upload(file, pw);
+        }
+        throw err;
+      }
+      const info = (await res.json()) as DocumentInfo;
+      setPdf(null);
+      st.setDocument({ docId: info.docId, fileName: info.fileName, pages: info.pages });
+    } catch (e) {
+      st.setError((e as Error).message);
+    } finally {
+      st.setBusy(false);
+    }
+  };
+
+  const download = async () => {
+    const res = await fetch(`/api/documents/${st.docId}/download`);
+    if (!res.ok) return st.setError((await apiError(res)).message);
+    downloadBlob(await res.blob(), st.fileName.replace(/\.pdf$/i, '') + (st.revision ? '-edited.pdf' : '.pdf'));
+  };
+
+  const model = st.pages[st.pageIndex];
+  // defineTable coordinates refer to the original page, which no longer matches the view once things moved.
+  const gridLocked = st.ops.some((o) => ['moveElement', 'tableInsertRow', 'tableDeleteRow', 'tableInsertCol', 'tableDeleteCol', 'resizeTable'].includes(o.type));
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-sm">
+        <button className="rounded bg-slate-900 px-3 py-1.5 text-white" onClick={() => inputRef.current?.click()} disabled={st.busy}>
+          Open PDF
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          hidden
+          data-testid="editor-input"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void upload(f);
+            e.target.value = '';
+          }}
+        />
+        {st.docId && (
+          <>
+            <span className="max-w-xs truncate font-medium">{st.fileName}</span>
+            <div className="ml-4 flex items-center gap-1">
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / 1.2)} title="Zoom out">−</button>
+              <span className="w-12 text-center tabular-nums">{Math.round(st.zoom * 100)}%</span>
+              <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom * 1.2)} title="Zoom in">+</button>
+            </div>
+            <div className="ml-4 flex items-center gap-1" data-testid="tools">
+              {(
+                [
+                  ['select', 'Select', 'Select, move, resize and edit (Delete removes the selection)'],
+                  ['addText', 'Add text', 'Click on the page to add a text box'],
+                  ['table', 'Table', 'Click a detected table or drag a rectangle around one, then align the mesh vertices to the cell corners and Confirm'],
+                ] as const
+              ).map(([t, label, title]) => (
+                <button
+                  key={t}
+                  title={t === 'table' && gridLocked ? 'Tables are set up on the original layout: undo moves and row/column changes first' : title}
+                  disabled={t === 'table' && gridLocked}
+                  className={`rounded px-2 py-1 disabled:opacity-40 ${st.tool === t ? 'bg-sky-600 text-white' : 'hover:bg-slate-100'}`}
+                  onClick={() => st.setTool(t)}
+                >
+                  {label}
+                </button>
+              ))}
+              {st.tool === 'addText' && pdf && <FontPicker pdf={pdf} pages={st.pages} revision={st.revision} />}
+            </div>
+            <div className="ml-2 flex items-center gap-1">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl+Z)">
+                ↶
+              </button>
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl+Shift+Z)">
+                ↷
+              </button>
+            </div>
+            <button className="ml-auto rounded bg-emerald-600 px-3 py-1.5 text-white" onClick={() => void download()}>
+              Download
+            </button>
+          </>
+        )}
+      </div>
+      {st.error && <div data-testid="editor-error" className="bg-red-50 px-4 py-2 text-sm text-red-700">{st.error}</div>}
+      <PromptDialog />
+      {!st.docId ? (
+        <div className="flex flex-1 items-center justify-center text-slate-500">{st.busy ? 'Analyzing…' : 'Open a PDF to edit it.'}</div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <aside className="w-36 shrink-0 space-y-2 overflow-y-auto border-r border-slate-200 bg-slate-50 p-2">
+            {pdf &&
+              st.pages.map((_, i) => (
+                <Thumb key={i} pdf={pdf} index={i} revision={st.revision} active={i === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === i).length} onClick={() => st.setPage(i)} />
+              ))}
+          </aside>
+          <section className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
+            {st.warnings.length > 0 && (
+              <ul className="mx-auto mb-3 max-w-3xl rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {st.warnings.map((w) => (
+                  <li key={w}>⚠ {w}</li>
+                ))}
+              </ul>
+            )}
+            {model && model.warnings.length > 0 && (
+              <ul className="mx-auto mb-3 max-w-3xl rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {model.warnings.map((w) => (
+                  <li key={w}>⚠ {w}</li>
+                ))}
+              </ul>
+            )}
+            {pdf && model && <PageView pdf={pdf} model={model} revision={st.revision} />}
+          </section>
+          <Inspector />
+        </div>
+      )}
+    </div>
+  );
+}

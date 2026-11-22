@@ -1,0 +1,12 @@
+export { PdfError, type PdfErrorCode } from './errors.ts';
+export { parsePageRanges } from './ranges.ts';
+export { loadPdf, type LoadedPdf } from './load.ts';
+export { mergePdfs, type MergeInput } from './merge.ts';
+export { parseContent, applyPatch, serializeOp, type ContentOp, type Operand, type ParsedContent } from './content/parser.ts';
+export { PdfFont, stripSubsetPrefix, standard14Name } from './fonts/pdfFont.ts';
+export { analyzeDocument, analyzePage, type PageAnalysis } from './model/extract.ts';
+export { analyzePdf, type PdfAnalysis } from './document.ts';
+export { applyEdits, removalOp, type ApplyResult } from './edit/apply.ts';
+export { reduceEdits, type EditState, type BoxEdit } from './edit/reduce.ts';
+export { snapshotObjects, writeIncremental } from './save/incremental.ts';
+export { configureFonts, fontIndex } from './fonts/lookup.ts';

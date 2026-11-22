@@ -1,0 +1,264 @@
+import { create } from 'zustand';
+import type { CellSpan, EditOperation, EditResult, PageModel, PageOverflow, Point, Rect, Ruling, StrategyReport, TableSetup } from '@pdf-toolkit/shared';
+import { postEdits } from '../lib/api.ts';
+import { moveOp } from './background.ts';
+
+export type Tool = 'select' | 'addText' | 'table';
+/**
+ * Table setup in progress (Table tool), with the Step 1 defaults. `grid`: detected or proposed row lines
+ * (top→bottom) and column lines; `setup`: the table's confirmed setup, when it has one.
+ */
+export type SetupDraft = {
+  pageIndex: number;
+  tableId: string;
+  rect: Rect;
+  rows: number;
+  cols: number;
+  borderWidth: number;
+  headerRows: number;
+  /** Detected grid; `spans`: merges detection proposes where inner borders are not drawn. */
+  grid?: { ys: number[]; xs: number[]; spans?: CellSpan[] };
+  setup?: TableSetup;
+  /** Scanned table: border lines and junctions found in the rendered pixels (the page has no vector rulings there). */
+  raster?: { rulings: Ruling[]; junctions: Point[] };
+};
+export type CellRef = { tableId: string; row: number; col: number };
+export type NewTextStyle = { fontFamily: string; fontSize: number };
+/**
+ * Question shown over the editor: content pushed past the page bottom by the last edit (`count` ops,
+ * Cancel takes them back), or a column insert that would leave the page (shrink the others or cancel).
+ */
+export type Prompt =
+  | { kind: 'overflow'; pageIndex: number; by: number; count: number }
+  | { kind: 'colFit'; by: number; op: Extract<EditOperation, { type: 'tableInsertCol' }> };
+/** Arrow-key moves not yet sent, in PDF user space. */
+export type Nudge = { id: string; dx: number; dy: number };
+
+export type EditorState = {
+  docId: string | null;
+  fileName: string;
+  pages: PageModel[];
+  /** Page models of the unedited document, to locate deleted elements. */
+  origPages: PageModel[];
+  revision: number;
+  pageIndex: number;
+  zoom: number;
+  hoveredId: string | null;
+  selectedId: string | null;
+  editingId: string | null;
+  ops: EditOperation[];
+  redoStack: EditOperation[][];
+  reports: StrategyReport[];
+  warnings: string[];
+  overflows: PageOverflow[];
+  prompt: Prompt | null;
+  busy: boolean;
+  error: string | null;
+  showChanges: boolean;
+  tool: Tool;
+  cell: CellRef | null;
+  editingCell: CellRef | null;
+  newText: NewTextStyle;
+  nudge: Nudge | null;
+  tableSetup: SetupDraft | null;
+  /** Bumped after each page render, so pixel-based colour detection re-reads the canvas. */
+  renderCount: number;
+  setDocument: (d: { docId: string; fileName: string; pages: PageModel[] }) => void;
+  setPage: (i: number) => void;
+  setZoom: (z: number) => void;
+  hover: (id: string | null) => void;
+  select: (id: string | null) => void;
+  startEditing: (id: string | null) => void;
+  applyResult: (r: EditResult) => void;
+  setBusy: (b: boolean) => void;
+  setError: (e: string | null) => void;
+  toggleChanges: () => void;
+  reset: () => void;
+  setTool: (t: Tool) => void;
+  selectCell: (c: CellRef | null) => void;
+  editCell: (c: CellRef | null) => void;
+  setNewText: (s: Partial<NewTextStyle>) => void;
+  startSetup: (d: SetupDraft | null) => void;
+  /** Appends ops on the server; `then` runs with the new state (e.g. to start editing a new box). */
+  edit: (ops: EditOperation[], then?: () => void) => Promise<void>;
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
+  /** Undoes one op anywhere in the list (later ops that depend on it make the server reject the change). */
+  removeOp: (index: number) => Promise<void>;
+  /** Moves the selected box by (dx, dy); consecutive nudges are sent as one moveElement. */
+  nudgeBy: (dx: number, dy: number) => void;
+  rendered: () => void;
+  setPrompt: (p: Prompt | null) => void;
+  /** Takes back the last `count` ops (not redoable). */
+  revert: (count: number) => Promise<void>;
+};
+
+const initial = {
+  docId: null,
+  fileName: '',
+  pages: [],
+  origPages: [],
+  revision: 0,
+  pageIndex: 0,
+  zoom: 1.25,
+  hoveredId: null,
+  selectedId: null,
+  editingId: null,
+  ops: [],
+  redoStack: [],
+  reports: [],
+  warnings: [],
+  overflows: [] as PageOverflow[],
+  prompt: null as Prompt | null,
+  busy: false,
+  error: null,
+  showChanges: false,
+  tool: 'select' as Tool,
+  cell: null,
+  editingCell: null,
+  newText: { fontFamily: 'Helvetica', fontSize: 12 },
+  nudge: null,
+  tableSetup: null,
+  renderCount: 0,
+};
+
+let nudgeTimer: ReturnType<typeof setTimeout> | undefined;
+/** Nudge amounts handed to `send` (queued or in flight) per element, not yet applied to `nudge`. */
+const pendingNudges = new Map<string, { dx: number; dy: number }>();
+const addPending = (n: Nudge, sign: 1 | -1) => {
+  const p = pendingNudges.get(n.id) ?? { dx: 0, dy: 0 };
+  const next = { dx: p.dx + sign * n.dx, dy: p.dy + sign * n.dy };
+  if (Math.abs(next.dx) < 1e-6 && Math.abs(next.dy) < 1e-6) pendingNudges.delete(n.id);
+  else pendingNudges.set(n.id, next);
+};
+
+/** Sends `n` as one moveElement; nudges made while the request runs stay pending. */
+async function sendNudge(get: () => EditorState, set: (p: Partial<EditorState>) => void, n: Nudge): Promise<void> {
+  addPending(n, 1);
+  const ok = await send(get, () => {
+    const st = get();
+    const model = st.pages.find((p) => p.textBoxes.some((b) => b.id === n.id) || p.tables.some((t) => t.id === n.id));
+    return [model ? moveOp(model, st.ops, n.id, n.dx, n.dy) : { type: 'moveElement', elementId: n.id, dx: n.dx, dy: n.dy }];
+  }, 'append');
+  addPending(n, -1);
+  const after = get().nudge;
+  if (!ok) return set({ nudge: after?.id === n.id ? null : after });
+  set({ redoStack: [] });
+  const rest = after && after.id === n.id ? { id: n.id, dx: after.dx - n.dx, dy: after.dy - n.dy } : after;
+  set({ nudge: rest && (Math.abs(rest.dx) > 1e-6 || Math.abs(rest.dy) > 1e-6) ? rest : null });
+}
+
+let queue: Promise<boolean> = Promise.resolve(true);
+
+/**
+ * Requests run one at a time, in call order, so appends never overlap. `ops` as a function is
+ * evaluated when the request starts, against the state the earlier requests left (null = skip).
+ */
+function send(get: () => EditorState, ops: EditOperation[] | (() => EditOperation[] | null), mode: 'append' | 'replace'): Promise<boolean> {
+  const run = async () => {
+    const st = get();
+    const list = typeof ops === 'function' ? ops() : ops;
+    if (!st.docId || !list) return false;
+    st.setBusy(true);
+    st.setError(null);
+    try {
+      st.applyResult(await postEdits(st.docId, list, mode));
+      return true;
+    } catch (e) {
+      st.setError((e as Error).message);
+      return false;
+    } finally {
+      st.setBusy(false);
+    }
+  };
+  queue = queue.then(run);
+  return queue;
+}
+
+export const useEditor = create<EditorState>((set, get) => ({
+  ...initial,
+  setDocument: (d) => set({ ...initial, ...d, origPages: d.pages }),
+  setPage: (pageIndex) => set({ pageIndex, selectedId: null, editingId: null, cell: null, editingCell: null, tableSetup: null }),
+  setZoom: (zoom) => set({ zoom: Math.min(4, Math.max(0.25, zoom)) }),
+  hover: (hoveredId) => set({ hoveredId }),
+  select: (selectedId) => set((s) => ({ selectedId, editingId: s.editingId === selectedId ? s.editingId : null, cell: null, editingCell: null })),
+  startEditing: (editingId) => set({ editingId, selectedId: editingId, cell: null, editingCell: null }),
+  applyResult: (r) => set({ revision: r.revision, ops: r.ops, reports: r.reports, warnings: r.warnings, overflows: r.overflows, pages: r.pages, editingId: null, editingCell: null }),
+  setBusy: (busy) => set({ busy }),
+  setError: (error) => set({ error }),
+  toggleChanges: () => set((s) => ({ showChanges: !s.showChanges })),
+  reset: () => set(initial),
+  setTool: (tool) => set({ tool, selectedId: null, editingId: null, cell: null, editingCell: null, tableSetup: null }),
+  selectCell: (cell) => set({ cell, selectedId: null, editingId: null, editingCell: null }),
+  editCell: (editingCell) => set({ editingCell, cell: editingCell ?? get().cell }),
+  setNewText: (s) => set((st) => ({ newText: { ...st.newText, ...s } })),
+  startSetup: (tableSetup) => set({ tableSetup }),
+  edit: async (ops, then) => {
+    const before = get().overflows;
+    if (await send(get, ops, 'append')) {
+      set({ redoStack: [] });
+      // Content newly pushed past a page bottom (e.g. a growing row): ask whether to keep it.
+      const worse = get().overflows.find((o) => o.by > (before.find((b) => b.pageIndex === o.pageIndex)?.by ?? 0) + 0.05);
+      if (worse) set({ prompt: { kind: 'overflow', pageIndex: worse.pageIndex, by: worse.by, count: ops.length } });
+      then?.();
+    }
+  },
+  setPrompt: (prompt) => set({ prompt }),
+  revert: async (count) => {
+    set({ prompt: null });
+    await send(get, () => get().ops.slice(0, -count), 'replace');
+  },
+  undo: async () => {
+    clearTimeout(nudgeTimer);
+    set({ nudge: null });
+    let undone: EditOperation[] = [];
+    // An op that was appended together with others is undone on its own; the server keeps no batches.
+    const ok = await send(get, () => {
+      const { ops } = get();
+      undone = ops.slice(-1);
+      return ops.length ? ops.slice(0, -1) : null;
+    }, 'replace');
+    if (ok) set((s) => ({ redoStack: [...s.redoStack, undone] }));
+  },
+  redo: async () => {
+    clearTimeout(nudgeTimer);
+    set({ nudge: null });
+    const ok = await send(get, () => get().redoStack.at(-1) ?? null, 'append');
+    if (ok) set((s) => ({ redoStack: s.redoStack.slice(0, -1) }));
+  },
+  removeOp: async (index) => {
+    clearTimeout(nudgeTimer);
+    set({ nudge: null });
+    const { ops } = get();
+    const target = JSON.stringify(ops[index]);
+    // An earlier queued request may have replaced the list; find the op again by value.
+    const keep = () => {
+      const cur = get().ops;
+      const i = cur === ops ? index : cur.findIndex((o) => JSON.stringify(o) === target);
+      return i < 0 ? null : cur.filter((_, k) => k !== i);
+    };
+    if (await send(get, keep, 'replace')) set({ redoStack: [] });
+    else set((st) => ({ error: `Change ${index + 1} can't be undone on its own (a later change depends on it): ${st.error}` }));
+  },
+  nudgeBy: (dx, dy) => {
+    const { selectedId, nudge } = get();
+    if (!selectedId) return;
+    clearTimeout(nudgeTimer);
+    // A pending nudge of another element is sent first, on its own, minus what is already being sent.
+    if (nudge && nudge.id !== selectedId) {
+      const p = pendingNudges.get(nudge.id) ?? { dx: 0, dy: 0 };
+      const rest = { id: nudge.id, dx: nudge.dx - p.dx, dy: nudge.dy - p.dy };
+      if (Math.abs(rest.dx) > 1e-6 || Math.abs(rest.dy) > 1e-6) void sendNudge(get, set, rest);
+    }
+    const cur = nudge?.id === selectedId ? nudge : { id: selectedId, dx: 0, dy: 0 };
+    set({ nudge: { id: selectedId, dx: cur.dx + dx, dy: cur.dy + dy } });
+    const flush = () => {
+      const n = get().nudge;
+      if (!n) return;
+      if (get().busy || pendingNudges.size) nudgeTimer = setTimeout(flush, 200);
+      else void sendNudge(get, set, n).then(() => get().nudge && (nudgeTimer = setTimeout(flush, 400)));
+    };
+    nudgeTimer = setTimeout(flush, 400);
+  },
+  rendered: () => set((s) => ({ renderCount: s.renderCount + 1 })),
+}));
