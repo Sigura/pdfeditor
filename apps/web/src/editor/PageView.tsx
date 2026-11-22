@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import type { Color, PageModel, Rect, StrategyReport, TextBox } from '@pdf-toolkit/shared';
 import { modalOpen } from '../lib/Dialogs.tsx';
 import type { PdfDoc } from '../lib/pdfjs.ts';
+import { beginActivity, endActivity } from '../lib/progress.tsx';
 import { opTarget } from './Changes.tsx';
 import { fillAt, moveOp, registerCanvas } from './background.ts';
 import { GuideLines, Readout, snapEdges, snapRect, snapTargets, type Guides } from './snap.tsx';
@@ -355,7 +356,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   useEffect(() => {
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
-    const activity = useEditor.getState().begin(`Rendering page ${model.pageIndex + 1}…`);
+    const activity = beginActivity(`Rendering page ${model.pageIndex + 1}…`);
     void (async () => {
       const page = await pdf.getPage(model.pageIndex + 1);
       if (cancelled) return;
@@ -388,7 +389,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
       .catch((e: unknown) => {
         if (!cancelled) useEditor.getState().setError(`Page ${model.pageIndex + 1} could not be shown: ${(e as Error).message ?? e}`);
       })
-      .finally(() => useEditor.getState().end(activity));
+      .finally(() => endActivity(activity));
     return () => {
       cancelled = true;
       task?.cancel();

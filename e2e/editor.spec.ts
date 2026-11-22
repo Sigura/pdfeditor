@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
@@ -797,4 +799,46 @@ test('page list changes are named in the Changes list', async ({ page }) => {
   await tool(1, 'thumb-delete');
   await expect(last()).toHaveText(/Delete page 2/);
   await expect(changes(page)).toHaveCount(4);
+});
+
+test('merge: a zip adds its PDFs in natural order; errors are all listed; Delete keeps the focus on a page', async ({ page }) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'zip-'));
+  for (const [name, src] of [['file10.pdf', 'table.pdf'], ['file2.pdf', 'latin-standard14.pdf'], ['sub/File01.pdf', 'table.pdf'], ['notes.txt', 'table.pdf']] as const) {
+    mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    copyFileSync(fixture(src), path.join(dir, name));
+  }
+  execFileSync('zip', ['-q', '-r', 'set.zip', 'file10.pdf', 'sub', 'notes.txt'], { cwd: dir });
+  execFileSync('zip', ['-q', '-0', 'set.zip', 'file2.pdf'], { cwd: dir });
+  writeFileSync(path.join(dir, 'empty.zip'), Buffer.from('PK\x05\x06' + '\0'.repeat(18), 'latin1'));
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([path.join(dir, 'set.zip'), path.join(dir, 'empty.zip'), path.join(dir, 'notes.txt')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(4);
+  const names = await items.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')!.split(',')[0]));
+  // Natural order of the paths inside the zip, so a folder's files stay together.
+  expect(names).toEqual(['file2.pdf page 1', 'file2.pdf page 2', 'file10.pdf page 1', 'File01.pdf page 1']);
+  await expect(page.getByTestId('merge-error')).toHaveText(/empty\.zip: no PDF files inside\s+notes\.txt: not a PDF or zip/);
+  await items.nth(1).focus();
+  await page.keyboard.press('Delete');
+  await expect(items).toHaveCount(3);
+  await expect(items.nth(1)).toBeFocused();
+  await expect(items.nth(1)).toContainText('file10.pdf');
+});
+
+test('merge: Add folder adds its PDFs and zips recursively in natural order of their paths, skipping other files', async ({ page }) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'folder-'));
+  const root = path.join(dir, 'docs');
+  for (const [name, src] of [['b/file1.pdf', 'table.pdf'], ['a/file10.pdf', 'table.pdf'], ['a/file02.pdf', 'latin-standard14.pdf'], ['readme.txt', 'table.pdf']] as const) {
+    mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+    copyFileSync(fixture(src), path.join(root, name));
+  }
+  copyFileSync(fixture('table.pdf'), path.join(dir, 'z3.pdf'));
+  execFileSync('zip', ['-q', path.join(root, 'a', 'file3.zip'), 'z3.pdf'], { cwd: dir });
+  await page.goto('/');
+  await page.getByTestId('merge-folder-input').setInputFiles(root);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(5);
+  const names = await items.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')!.split(',')[0]));
+  expect(names).toEqual(['file02.pdf page 1', 'file02.pdf page 2', 'z3.pdf page 1', 'file10.pdf page 1', 'file1.pdf page 1']);
+  await expect(page.getByTestId('merge-error')).toHaveCount(0);
 });

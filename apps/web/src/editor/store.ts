@@ -1,7 +1,10 @@
 import { create } from 'zustand';
 import { displayOrder, type ArrangePages, type CellSpan, type EditOperation, type EditResult, type PageModel, type PageOverflow, type Point, type Rect, type Ruling, type StrategyReport, type TableSetup } from '@pdf-toolkit/shared';
 import { postEdits } from '../lib/api.ts';
+import { track } from '../lib/progress.tsx';
 import { measureScanLayouts, moveOp } from './background.ts';
+
+export { track };
 
 export type Tool = 'select' | 'addText' | 'table';
 /**
@@ -32,20 +35,6 @@ export type Prompt =
   | { kind: 'newPage'; pageIndex: number; by: number; count: number; pageNumber?: string; tableIds: string[] }
   | { kind: 'continuation'; pageIndex: number; tableIds: string[] }
   | { kind: 'colFit'; by: number; op: Extract<EditOperation, { type: 'tableInsertCol' }> };
-export type Activity = { id: number; label: string; since: number };
-let activityId = 0;
-
-/** Runs `fn` as a named activity, so a long wait shows progress. */
-export async function track<T>(label: string, fn: (step: (label: string) => void) => Promise<T>): Promise<T> {
-  const st = useEditor.getState();
-  const id = st.begin(label);
-  try {
-    return await fn((l) => useEditor.getState().progress(id, l));
-  } finally {
-    useEditor.getState().end(id);
-  }
-}
-
 /** Arrow-key moves not yet sent, in PDF user space. */
 export const arrangement = (ops: EditOperation[]): ArrangePages | undefined => ops.findLast((op) => op.type === 'arrangePages');
 
@@ -88,10 +77,6 @@ export type EditorState = {
   prompt: Prompt | null;
   busy: boolean;
   /** Running operations, oldest first; the editor shows the latest once it has run 1.5 s. */
-  activities: Activity[];
-  begin: (label: string) => number;
-  progress: (id: number, label: string) => void;
-  end: (id: number) => void;
   error: string | null;
   showChanges: boolean;
   tool: Tool;
@@ -162,7 +147,6 @@ const initial = {
   overflows: [] as PageOverflow[],
   continuations: [] as EditResult['continuations'],
   prompt: null as Prompt | null,
-  activities: [] as Activity[],
   busy: false,
   error: null,
   showChanges: false,
@@ -381,13 +365,6 @@ export const useEditor = create<EditorState>((set, get) => ({
     nudgeTimer = setTimeout(flush, 400);
   },
   rendered: () => set((s) => ({ renderCount: s.renderCount + 1 })),
-  begin: (label) => {
-    const id = ++activityId;
-    set((s) => ({ activities: [...s.activities, { id, label, since: Date.now() }] }));
-    return id;
-  },
-  progress: (id, label) => set((s) => ({ activities: s.activities.map((a) => (a.id === id ? { ...a, label } : a)) })),
-  end: (id) => set((s) => ({ activities: s.activities.filter((a) => a.id !== id) })),
 }));
 
 // The document lives on the server only for the session's TTL and the page keeps no handle to it.

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import { apiError, downloadBlob, serverLimits } from '../lib/api.ts';
 import { askConfirm, askPassword, modalOpen } from '../lib/Dialogs.tsx';
+import { track } from '../lib/progress.tsx';
+import { droppedFiles, isZip, naturalCompare, readZip } from '../lib/zip.ts';
 import { Thumbnail } from './Thumbnail.tsx';
 import { BLANK, toSegments, useMergeStore } from './store.ts';
 
@@ -34,32 +36,52 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const [running, setRunning] = useState<'download' | 'edit' | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const fileIds = Object.keys(files);
   const hasPages = pages.some((p) => p.fileId !== BLANK);
 
-  const addFiles = async (list: FileList | File[]) => {
+  /** Adds PDFs, the PDFs inside zips and, for files from a folder, skips anything else; all in natural order of their paths. */
+  const addFiles = async (list: FileList | File[] | { file: File; path: string; inFolder: boolean }[]) => {
     setError(null);
     // Copy before the first await: the input's FileList empties when its value is reset.
-    const picked = Array.from(list);
-    const limits = await serverLimits().catch(() => null);
-    for (const f of picked) {
-      if (!f.name.toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf') {
-        setError(`${f.name}: not a PDF`);
-        continue;
+    const given = Array.from(list as ArrayLike<File | { file: File; path: string; inFolder: boolean }>, (f) => (f instanceof File ? { file: f, path: f.webkitRelativePath || f.name, inFolder: !!f.webkitRelativePath } : f));
+    const folderFiles = given.filter((g) => g.inFolder);
+    const picked = given.filter((g) => !g.inFolder || isZip(g.file) || /\.pdf$/i.test(g.file.name)).sort((a, b) => naturalCompare(a.path, b.path)).map((g) => g.file);
+    const errors: string[] = folderFiles.length && !folderFiles.some((g) => picked.includes(g.file)) ? ['The folder has no PDF or zip files.'] : [];
+    await track('Reading files…', async (step) => {
+      const limits = await serverLimits().catch(() => null);
+      const inputs: { name: string; size: number; read: () => Promise<Uint8Array> }[] = [];
+      for (const f of picked) {
+        if (isZip(f)) {
+          try {
+            step(`Unpacking ${f.name}…`);
+            const pdfs = await readZip(new Uint8Array(await f.arrayBuffer()), (n) => /\.pdf$/i.test(n));
+            if (!pdfs.length) errors.push(`${f.name}: no PDF files inside`);
+            for (const p of pdfs) inputs.push({ name: p.name.split('/').pop()!, size: p.bytes.length, read: async () => p.bytes });
+          } catch (e) {
+            errors.push(`${f.name}: ${(e as Error).message}`);
+          }
+        } else if (!f.name.toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf') errors.push(`${f.name}: not a PDF or zip`);
+        else inputs.push({ name: f.name, size: f.size, read: async () => new Uint8Array(await f.arrayBuffer()) });
       }
-      if (limits && f.size > limits.maxFileBytes) {
-        setError(`${f.name} is ${mb(f.size)} MB; files can be at most ${mb(limits.maxFileBytes)} MB.`);
-        continue;
+      for (const [i, f] of inputs.entries()) {
+        if (limits && f.size > limits.maxFileBytes) {
+          errors.push(`${f.name} is ${mb(f.size)} MB; files can be at most ${mb(limits.maxFileBytes)} MB.`);
+          continue;
+        }
+        step(inputs.length > 1 ? `Reading ${f.name} (${i + 1}/${inputs.length})…` : `Reading ${f.name}…`);
+        try {
+          const bytes = await f.read();
+          const { pageCount, password } = await countPages(bytes, f.name);
+          addFile({ id: crypto.randomUUID(), name: f.name, bytes, pageCount, password });
+        } catch (e) {
+          errors.push((e as Error).message);
+        }
       }
-      try {
-        const bytes = new Uint8Array(await f.arrayBuffer());
-        const { pageCount, password } = await countPages(bytes, f.name);
-        addFile({ id: crypto.randomUUID(), name: f.name, bytes, pageCount, password });
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    }
+    });
+    if (errors.length) setError(errors.join('\n'));
   };
 
   useEffect(() => {
@@ -84,14 +106,16 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
   const onFileDrop = (e: DragEvent) => {
     e.preventDefault();
     setDropActive(false);
-    if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
+    if (e.dataTransfer.files.length === 0) return;
+    droppedFiles(e.dataTransfer.items).then(addFiles, (err: Error) => setError(`Couldn't read the dropped items: ${err.message}`));
   };
 
   const firstFile = files[pages.find((p) => p.fileId !== BLANK)?.fileId ?? ''];
   const outName = `${(firstFile?.name ?? 'document').replace(/\.pdf$/i, '')}-merged.pdf`;
 
-  const merge = async (then: (blob: Blob) => void) => {
+  const merge = async (action: 'download' | 'edit', then: (blob: Blob) => void) => {
     setBusy(true);
+    setRunning(action);
     setError(null);
     try {
       const used = fileIds.filter((id) => pages.some((p) => p.fileId === id));
@@ -104,13 +128,14 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       }
       form.append('segments', JSON.stringify(toSegments(pages, used)));
       form.append('passwords', JSON.stringify(used.map((id) => files[id]!.password ?? '')));
-      const res = await fetch('/api/merge', { method: 'POST', body: form });
+      const res = await track(`Merging ${pages.length} page${pages.length === 1 ? '' : 's'}…`, () => fetch('/api/merge', { method: 'POST', body: form }));
       if (!res.ok) throw await apiError(res);
       then(await res.blob());
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      setRunning(null);
     }
   };
 
@@ -130,10 +155,24 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
         <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50" onClick={() => inputRef.current?.click()}>
           Add PDFs
         </button>
+        <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50" title="Add every PDF and zip in a folder and its subfolders, in natural order of their paths" onClick={() => folderRef.current?.click()}>
+          Add folder
+        </button>
+        <input
+          ref={folderRef}
+          type="file"
+          hidden
+          data-testid="merge-folder-input"
+          {...{ webkitdirectory: '' }}
+          onChange={(e) => {
+            if (e.target.files) void addFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
         <input
           ref={inputRef}
           type="file"
-          accept="application/pdf,.pdf"
+          accept="application/pdf,.pdf,application/zip,.zip"
           multiple
           hidden
           data-testid="merge-input"
@@ -145,18 +184,18 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
         <button
           className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-700 disabled:opacity-40"
           disabled={!hasPages || busy}
-          onClick={() => void merge((b) => downloadBlob(b, outName))}
+          onClick={() => void merge('download', (b) => downloadBlob(b, outName))}
         >
-          {busy ? 'Merging…' : `Merge & download (${pages.length} pages)`}
+          {running === 'download' ? 'Merging…' : `Merge & download (${pages.length} pages)`}
         </button>
         <button
           data-testid="merge-edit"
           className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           title="Merge, then open the result in the editor"
           disabled={!hasPages || busy}
-          onClick={() => void merge((b) => onEdit(new File([b], outName, { type: 'application/pdf' })))}
+          onClick={() => void merge('edit', (b) => onEdit(new File([b], outName, { type: 'application/pdf' })))}
         >
-          Edit result
+          {running === 'edit' ? 'Merging…' : 'Edit result'}
         </button>
         <button
           data-testid="merge-undo"
@@ -189,7 +228,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       </div>
       {error && (
         <div data-testid="merge-error" role="alert" className="flex items-start gap-2 bg-red-50 px-4 py-2 text-sm text-red-700">
-          <span className="flex-1">{error}</span>
+          <span className="flex-1 whitespace-pre-line">{error}</span>
           <button aria-label="Dismiss" title="Dismiss" className="rounded px-1 leading-5 hover:bg-red-100" onClick={() => setError(null)}>
             ×
           </button>
@@ -197,7 +236,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       )}
       <div className={`min-h-0 flex-1 overflow-auto p-6 ${dropActive ? 'bg-sky-50 outline-2 outline-dashed outline-sky-400' : ''}`}>
         {pages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-slate-500">Drop PDF files here or click “Add PDFs”. Then reorder, rotate, delete or insert blank pages.</div>
+          <div className="flex h-full items-center justify-center text-slate-500">Drop PDF files, zips or folders here, or click “Add PDFs” / “Add folder”. Then reorder, rotate, delete or insert blank pages.</div>
         ) : (
           <ol className="flex flex-wrap gap-5">
             {pages.map((p, i) => {
@@ -221,7 +260,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                       requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-key="${CSS.escape(p.key)}"]`)?.focus());
                     } else if (e.key === 'Delete') {
                       e.preventDefault();
+                      const next = pages[i + 1] ?? pages[i - 1];
                       removePage(p.key);
+                      if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-key="${CSS.escape(next.key)}"]`)?.focus());
                     }
                   }}
                   data-testid="merge-page"

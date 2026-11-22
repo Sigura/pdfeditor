@@ -344,29 +344,6 @@ const ZOOM_STEP = 1.2;
 const isGridLocked = (ops: EditOperation[]) => ops.some((o) => ['moveElement', 'tableInsertRow', 'tableDeleteRow', 'tableInsertCol', 'tableDeleteCol', 'resizeTable'].includes(o.type));
 const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || !!t.closest('[aria-modal]'));
 
-const PROGRESS_AFTER_MS = 1500;
-
-/** The latest running activity, once something has run for 1.5 s, with the elapsed time. */
-function ProgressBanner() {
-  const activities = useEditor((s) => s.activities);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!activities.length) return;
-    const t = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(t);
-  }, [activities.length]);
-  const oldest = activities[0];
-  if (!oldest || now - oldest.since < PROGRESS_AFTER_MS) return null;
-  const latest = activities.at(-1)!;
-  return (
-    <div data-testid="progress" role="status" className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
-      <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-      <span>{latest.label}</span>
-      <span className="tabular-nums text-white/60">{((now - oldest.since) / 1000).toFixed(1)} s</span>
-    </div>
-  );
-}
-
 export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
   const st = useEditor();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
@@ -653,7 +630,6 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       )}
       <TiltBanner />
       <PromptDialog />
-      <ProgressBanner />
       {help && <ShortcutHelp onClose={() => setHelp(false)} />}
       {dropActive && st.docId && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center border-4 border-dashed border-sky-500 bg-sky-50/70 text-lg font-medium text-sky-700">Drop to open this PDF</div>

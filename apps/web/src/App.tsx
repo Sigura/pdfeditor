@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { MergeView } from './merge/MergeView.tsx';
 import { EditorView } from './editor/EditorView.tsx';
 import { Dialogs } from './lib/Dialogs.tsx';
+import { ProgressBanner } from './lib/progress.tsx';
 import { useEditor } from './editor/store.ts';
 import { useMergeStore } from './merge/store.ts';
 
@@ -44,6 +45,7 @@ export function App() {
           />
         )}
       </main>
+      <ProgressBanner />
       <Dialogs />
     </div>
   );
