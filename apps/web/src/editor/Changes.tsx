@@ -6,6 +6,7 @@ export function opTarget(op: EditOperation): string {
   if (op.type === 'addTextBox') return op.id;
   if (op.type === 'setPageFlow' || op.type === 'scanLayout') return `page-flow`;
   if (op.type === 'arrangePages') return 'arrange-pages';
+  if (op.type === 'deskewPage') return `deskew-${op.pageIndex}`;
   return 'tableId' in op ? op.tableId : op.elementId;
 }
 
@@ -54,6 +55,8 @@ function describe(op: EditOperation, name: string): string {
       return op.repeatHeader ? 'Continued table repeats its header rows' : 'Continued table without header rows';
     case 'scanLayout':
       return `Scan layout of page ${op.pageIndex + 1} (${op.lines.length} lines)`;
+    case 'deskewPage':
+      return `Straighten page by ${op.angle.toFixed(2)}°`;
     case 'arrangePages':
       return `Arrange pages (${op.order.length} pages)`;
     case 'resizeTable':

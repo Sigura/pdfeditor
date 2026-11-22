@@ -704,6 +704,26 @@ describe('scanned tables (scanned-table.pdf)', () => {
     expect(diff).toBeLessThanOrEqual(2);
   });
 
+  it('deskewPage straightens a tilted scan over a paper fill, and a table defined on it edits like the upright one', async () => {
+    const skewed = fixture('scanned-table-skewed.pdf');
+    const deskew = { type: 'deskewPage' as const, pageIndex: 0, angle: -1.5, paper: grey(248) };
+    const ops = [define, { type: 'setCellText' as const, tableId: 't-scan', row: 1, col: 1, text: '' }];
+    const [up, straight, tilted] = await Promise.all([applyEdits(fixture('scanned-table.pdf'), ops), applyEdits(skewed, [deskew, ...ops]), applyEdits(skewed, [{ ...deskew, angle: 0 }, define])]);
+    expect(Buffer.from(straight.bytes.subarray(0, skewed.length)).equals(Buffer.from(skewed))).toBe(true);
+    const S = 2;
+    const [a, b, c] = await Promise.all([renderGray(up.bytes, S), renderGray(straight.bytes, S), renderGray(tilted.bytes, S)]);
+    const mismatch = (o: typeof b) => {
+      let n = 0;
+      for (let y = 540; y < 720; y += 1 / S) for (let x = 40; x < 560; x += 1 / S) if (Math.abs(a.at(x, y) - o.at(x, y)) > 64) n++;
+      return n;
+    };
+    // Of ~374k pixels: resampling differences at ink edges only, against ~88k while still tilted.
+    expect(mismatch(c)).toBeGreaterThan(20_000);
+    expect(mismatch(b)).toBeLessThan(1000);
+    // The corner the rotation uncovers is paper, not white.
+    expect(Math.abs(b.at(3, 3) - 248)).toBeLessThanOrEqual(2);
+  });
+
   it('the model\'s scan fills follow their cells into the new grid (inserted rows as drawn, a set background included)', async () => {
     const fills = ys.slice(0, -1).map((_, r) => xs.slice(0, -1).map((_, c) => (r === 0 ? grey(212) : r === 2 && c === 1 ? grey(180) : null)));
     const res = await applyEdits(fixture('scanned-table.pdf'), [

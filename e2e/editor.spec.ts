@@ -571,3 +571,38 @@ test('paging on a scan: the layout is measured in the browser, sent with the cha
   await expect(page.locator('img[alt^="Page "]')).toHaveCount(2);
   await expect(page.getByTestId('prompt')).toHaveCount(0);
 });
+
+test('tilted scan: the banner straightens it, the Table tool then finds the grid, and a page with edits cannot be re-straightened', async ({ page }) => {
+  await open(page, 'scanned-table-skewed.pdf');
+  // Fixture: scanned-table.pdf turned 1.5° counter-clockwise (generate.ts).
+  await expect(page.getByTestId('tilt-banner')).toContainText('Scanned page 1 looks tilted (1.5°)');
+  const sent = page.waitForRequest((r) => r.url().endsWith('/edits') && r.method() === 'POST');
+  await page.getByTestId('straighten-all').click();
+  const op = (await sent).postDataJSON().ops.at(-1);
+  expect(op.type).toBe('deskewPage');
+  expect(Math.abs(op.angle + 1.5)).toBeLessThanOrEqual(0.1);
+  expect(op.paper.values[0] * 255).toBeCloseTo(248, -1);
+  await expect(page.getByTestId('tilt-banner')).toHaveCount(0);
+  await expect(changes(page)).toHaveCount(1);
+  await expect(page.getByTestId('straighten-angle')).toHaveValue(op.angle.toFixed(2));
+  // The Table tool searches the shown revision's pixels.
+  await expect(page.locator('[data-pdf-revision="1"]')).toHaveCount(1);
+
+  const ov = (await page.getByTestId('overlay').boundingBox())!;
+  const at = (x: number, y: number) => [ov.x + (x / 595) * ov.width, ov.y + ((842 - y) / 842) * ov.height] as const;
+  await page.getByTestId('tools').getByRole('button', { name: 'Table', exact: true }).click();
+  await page.mouse.move(...at(50, 710));
+  await page.mouse.down();
+  await page.mouse.move(...at(550, 556), { steps: 5 });
+  await page.mouse.up();
+  await expect(page.getByTestId('setup-cols')).toHaveValue('4');
+  await expect(page.getByTestId('setup-rows')).toHaveValue('5');
+  await page.getByTestId('setup-ok').click();
+  await page.getByTestId('setup-confirm').click();
+  await expect(changes(page)).toHaveCount(2);
+  await expect(page.getByTestId('straighten-detect')).toBeDisabled();
+  await page.keyboard.press('Control+z');
+  await expect(changes(page)).toHaveCount(1);
+  await expect(page.getByTestId('straighten-detect')).toBeEnabled();
+  await expect(page.getByTestId('editor-error')).toHaveCount(0);
+});

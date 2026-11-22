@@ -7,6 +7,7 @@ export { PdfFont, stripSubsetPrefix, standard14Name } from './fonts/pdfFont.ts';
 export { analyzeDocument, analyzePage, type PageAnalysis } from './model/extract.ts';
 export { analyzePdf, type PdfAnalysis } from './document.ts';
 export { applyEdits, removalOp, type ApplyResult } from './edit/apply.ts';
+export { deskewPdf } from './edit/deskew.ts';
 export { reduceEdits, type EditState, type BoxEdit } from './edit/reduce.ts';
 export { snapshotObjects, writeIncremental } from './save/incremental.ts';
 export { configureFonts, fontIndex } from './fonts/lookup.ts';

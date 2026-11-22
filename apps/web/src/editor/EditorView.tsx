@@ -8,6 +8,7 @@ import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
 import { arrangement, pageNo, pageOrder, track, useEditor } from './store.ts';
+import { StraightenBar, TiltBanner } from './Deskew.tsx';
 
 function Thumb({ pdf, index, no, rotate, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -267,29 +268,43 @@ function ProgressBanner() {
 export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
   const st = useEditor();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
+  const [pdfRevision, setPdfRevision] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
   const [dropActive, setDropActive] = useState(false);
   const [help, setHelp] = useState(false);
 
+  const shown = useRef<PdfDoc | null>(null);
   useEffect(() => {
     if (!st.docId) return;
     let alive = true;
-    let loaded: PdfDoc | null = null;
+    const revision = st.revision;
     void (async () => {
-      loaded = await track('Loading the document…', async () => {
-        const res = await fetch(`/api/documents/${st.docId}/pdf?rev=${st.revision}`);
+      const loaded = await track('Loading the document…', async () => {
+        const res = await fetch(`/api/documents/${st.docId}/pdf?rev=${revision}`);
         if (!res.ok) throw await apiError(res);
         return openPdf(new Uint8Array(await res.arrayBuffer()));
       });
-      if (alive) setPdf(loaded);
-      else void loaded.destroy();
+      if (!alive) return void loaded.destroy();
+      // The shown revision stays usable until the next one replaces it: a render on a destroyed
+      // document never settles, and the Table tool may start one right after an edit.
+      const old = shown.current;
+      shown.current = loaded;
+      setPdf(loaded);
+      setPdfRevision(revision);
+      if (old) void old.destroy();
     })().catch((e: Error) => useEditor.getState().setError(e.message));
     return () => {
       alive = false;
-      if (loaded) void loaded.destroy();
     };
   }, [st.docId, st.revision]);
+  useEffect(
+    () => () => {
+      void shown.current?.destroy();
+      shown.current = null;
+    },
+    [st.docId],
+  );
 
   const open = async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') return st.setError(`${file.name}: not a PDF`);
@@ -516,6 +531,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
           </button>
         </div>
       )}
+      <TiltBanner />
       <PromptDialog />
       <ProgressBanner />
       {help && <ShortcutHelp onClose={() => setHelp(false)} />}
@@ -545,7 +561,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
           <aside className="w-36 shrink-0 space-y-2 overflow-y-auto border-r border-slate-200 bg-slate-50 p-2">
             {pdf && <PageList pdf={pdf} />}
           </aside>
-          <section ref={sectionRef} className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
+          <section ref={sectionRef} data-pdf-revision={pdfRevision} className="min-w-0 flex-1 overflow-auto bg-slate-200 p-6">
             {st.warnings.length > 0 && (
               <ul className="mx-auto mb-3 max-w-3xl rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {st.warnings.map((w) => (
@@ -565,6 +581,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
                 ↻ {arrangement(st.ops)!.order.find((e) => e.page === st.pageIndex)!.rotate}° on download
               </div>
             ) : null}
+            {model && <StraightenBar model={model} />}
             {pdf && model && <PageView pdf={pdf} model={model} revision={st.revision} />}
           </section>
           <Inspector />
