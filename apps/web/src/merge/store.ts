@@ -17,6 +17,8 @@ type MergeState = {
   rotatePage: (key: string) => void;
   /** Adds a blank page after position `index` (-1: first). */
   insertBlank: (index: number) => void;
+  /** Repeats the page right after itself. */
+  duplicatePage: (key: string) => void;
   /** Files handed over from another tab (the editor's "Arrange pages"), added when this tab mounts. */
   incoming: File[];
   setIncoming: (files: File[]) => void;
@@ -52,6 +54,14 @@ export const useMergeStore = create<MergeState>((set) => ({
     set((s) => {
       const pages = s.pages.slice();
       pages.splice(index + 1, 0, { key: `blank:${++blankId}`, fileId: BLANK, pageIndex: -1, rotate: 0 });
+      return { pages };
+    }),
+  duplicatePage: (key) =>
+    set((s) => {
+      const i = s.pages.findIndex((p) => p.key === key);
+      if (i < 0) return s;
+      const pages = s.pages.slice();
+      pages.splice(i + 1, 0, { ...pages[i]!, key: `${key}+${++blankId}` });
       return { pages };
     }),
   removeFile: (fileId) =>

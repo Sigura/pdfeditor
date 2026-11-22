@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import { apiError, downloadBlob } from '../lib/api.ts';
-import { askPassword } from '../lib/Dialogs.tsx';
+import { askConfirm, askPassword } from '../lib/Dialogs.tsx';
 import { Thumbnail } from './Thumbnail.tsx';
 import { BLANK, toSegments, useMergeStore } from './store.ts';
 
@@ -28,7 +28,7 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
 }
 
 export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
-  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, removeFile, clear, setBusy, setError } = useMergeStore();
+  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, clear, setBusy, setError } = useMergeStore();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -67,6 +67,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
     if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
   };
 
+  const firstFile = files[pages.find((p) => p.fileId !== BLANK)?.fileId ?? ''];
+  const outName = `${(firstFile?.name ?? 'document').replace(/\.pdf$/i, '')}-merged.pdf`;
+
   const merge = async (then: (blob: Blob) => void) => {
     setBusy(true);
     setError(null);
@@ -98,11 +101,11 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           setDropActive(true);
         }
       }}
-      onDragLeave={() => setDropActive(false)}
+      onDragLeave={(e) => e.currentTarget === e.target && setDropActive(false)}
       onDrop={onFileDrop}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
-        <button className="rounded bg-slate-900 px-3 py-1.5 text-sm text-white" onClick={() => inputRef.current?.click()}>
+        <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50" onClick={() => inputRef.current?.click()}>
           Add PDFs
         </button>
         <input
@@ -118,22 +121,27 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           }}
         />
         <button
-          className="rounded bg-emerald-600 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+          className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-700 disabled:opacity-40"
           disabled={!hasPages || busy}
-          onClick={() => void merge((b) => downloadBlob(b, 'merged.pdf'))}
+          onClick={() => void merge((b) => downloadBlob(b, outName))}
         >
           {busy ? 'Merging…' : `Merge & download (${pages.length} pages)`}
         </button>
         <button
           data-testid="merge-edit"
-          className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+          className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           title="Merge, then open the result in the editor"
           disabled={!hasPages || busy}
-          onClick={() => void merge((b) => onEdit(new File([b], 'merged.pdf', { type: 'application/pdf' })))}
+          onClick={() => void merge((b) => onEdit(new File([b], outName, { type: 'application/pdf' })))}
         >
           Edit result
         </button>
-        <button className="rounded px-3 py-1.5 text-sm hover:bg-slate-100" onClick={clear} disabled={busy}>
+        <button
+          data-testid="merge-clear"
+          className="rounded px-3 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
+          disabled={busy || !pages.length}
+          onClick={() => void askConfirm(`Clear the list? ${pages.length === 1 ? 'The page is' : `All ${pages.length} pages are`} removed, with their files.`, 'Clear').then((yes) => yes && clear())}
+        >
           Clear
         </button>
         <div className="ml-auto flex flex-wrap gap-2">
@@ -148,7 +156,14 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           ))}
         </div>
       </div>
-      {error && <div className="bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
+      {error && (
+        <div data-testid="merge-error" role="alert" className="flex items-start gap-2 bg-red-50 px-4 py-2 text-sm text-red-700">
+          <span className="flex-1">{error}</span>
+          <button aria-label="Dismiss" title="Dismiss" className="rounded px-1 leading-5 hover:bg-red-100" onClick={() => setError(null)}>
+            ×
+          </button>
+        </div>
+      )}
       <div className={`min-h-0 flex-1 overflow-auto p-6 ${dropActive ? 'bg-sky-50 outline-2 outline-dashed outline-sky-400' : ''}`}>
         {pages.length === 0 ? (
           <div className="flex h-full items-center justify-center text-slate-500">Drop PDF files here or click “Add PDFs”. Then reorder, rotate, delete or insert blank pages.</div>
@@ -208,7 +223,10 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     <button data-testid="page-blank" title="Insert a blank page after this one" aria-label="Insert blank page after" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => insertBlank(i)}>
                       +
                     </button>
-                    <button title="Remove page" aria-label="Remove page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
+                    <button data-testid="page-duplicate" title="Duplicate this page after it" aria-label="Duplicate page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => duplicatePage(p.key)}>
+                      ⧉
+                    </button>
+                    <button title="Delete page" aria-label="Delete page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
                       ×
                     </button>
                   </div>

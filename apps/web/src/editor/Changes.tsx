@@ -1,4 +1,5 @@
 import type { EditOperation, PageModel } from '@pdf-toolkit/shared';
+import { askConfirm } from '../lib/Dialogs.tsx';
 import { pageNo, useEditor } from './store.ts';
 
 /** Id of the box or table an op changes. */
@@ -46,7 +47,7 @@ function describe(op: EditOperation, name: string): string {
     case 'tableDeleteCol':
       return `Delete column ${op.index + 1}`;
     case 'setCellText':
-      return `Cell R${op.row + 1}C${op.col + 1} → “${clip(op.text, 20)}”`;
+      return op.text ? `Cell R${op.row + 1}C${op.col + 1} → “${clip(op.text, 20)}”` : `Clear cell R${op.row + 1}C${op.col + 1}`;
     case 'defineTable':
       return `Table setup ${op.vertices.length - 1}×${op.vertices[0]!.length - 1}${op.spans.length ? `, ${op.spans.length} merged` : ''}`;
     case 'setPageFlow':
@@ -65,7 +66,7 @@ function describe(op: EditOperation, name: string): string {
 }
 
 export function ChangesList() {
-  const { ops, pages, origPages, reports, busy, showChanges, toggleChanges, removeOp, setPage, select, selectCell } = useEditor();
+  const { ops, pages, origPages, reports, busy, showChanges, toggleChanges, removeOp, revertAll, setPage, select, selectCell } = useEditor();
   const nameOf = (id: string) => {
     for (const list of [pages, origPages]) {
       for (const p of list) {
@@ -80,6 +81,17 @@ export function ChangesList() {
     <div className="flex min-h-0 flex-col" data-testid="changes">
       <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
         <span className="font-medium">Changes ({ops.length})</span>
+        {ops.length > 0 && (
+          <button
+            data-testid="revert-all"
+            className="ml-auto mr-2 rounded px-1.5 text-xs text-slate-600 hover:bg-red-100 hover:text-red-700 disabled:opacity-40"
+            disabled={busy}
+            title="Undo every change (Redo brings them back)"
+            onClick={() => void askConfirm(`Undo all ${ops.length} change${ops.length > 1 ? 's' : ''}? Redo (Ctrl + Shift + Z) brings them back.`, 'Revert all').then((yes) => { if (yes) void revertAll(); })}
+          >
+            Revert all
+          </button>
+        )}
         <label className="flex items-center gap-1 text-xs text-slate-600" title="Outline changed and deleted elements on the page">
           <input type="checkbox" checked={showChanges} onChange={toggleChanges} data-testid="show-changes" />
           Show on page

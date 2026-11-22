@@ -53,6 +53,9 @@ export const arrangement = (ops: EditOperation[]): ArrangePages | undefined => o
 export const pageOrder = (ops: EditOperation[], pages: PageModel[]): number[] => displayOrder(arrangement(ops), pages.length, pages.filter((p) => !p.added).length);
 
 /** 1-based number of edit page `k` as shown. */
+/** Edits made since the last download. */
+export const hasUnsaved = (s: { ops: EditOperation[]; revision: number; downloadedRevision: number }) => s.ops.length > 0 && s.revision !== s.downloadedRevision;
+
 export const pageNo = (s: { ops: EditOperation[]; pages: PageModel[] }, k: number): number => pageOrder(s.ops, s.pages).indexOf(k) + 1;
 
 export type Nudge = { id: string; dx: number; dy: number };
@@ -126,6 +129,8 @@ export type EditorState = {
   deskew: (ops: Extract<EditOperation, { type: 'deskewPage' }>[]) => Promise<void>;
   /** Undoes one op anywhere in the list (later ops that depend on it make the server reject the change). */
   removeOp: (index: number) => Promise<void>;
+  /** Undoes every op; one redo brings them all back. */
+  revertAll: () => Promise<void>;
   /** Moves the selected box by (dx, dy); consecutive nudges are sent as one moveElement. */
   nudgeBy: (dx: number, dy: number) => void;
   rendered: () => void;
@@ -259,7 +264,8 @@ export const useEditor = create<EditorState>((set, get) => ({
           const need = get().overflows.find((o) => o.needsLayout?.length)?.needsLayout;
           const docId = get().docId;
           if (!need || !docId) break;
-          const models = need.map((i) => get().origPages[i]!);
+          // A page copy has no original model; its current one shows the copied page.
+          const models = need.map((i) => get().origPages[i] ?? get().pages[i]!);
           let layouts: EditOperation[];
           try {
             layouts = await track('Measuring scanned page layout…', (step) => measureScanLayouts(docId, models, (i, n) => step(`Measuring scanned page layout ${i}/${n}…`)));
@@ -327,6 +333,16 @@ export const useEditor = create<EditorState>((set, get) => ({
     const ok = await send(get, () => get().redoStack.at(-1) ?? null, 'append');
     if (ok) set((s) => ({ redoStack: s.redoStack.slice(0, -1) }));
   },
+  revertAll: async () => {
+    clearTimeout(nudgeTimer);
+    set({ nudge: null });
+    let undone: EditOperation[] = [];
+    const ok = await send(get, () => {
+      undone = get().ops;
+      return undone.length ? [] : null;
+    }, 'replace');
+    if (ok) set((s) => ({ redoStack: [...s.redoStack, undone] }));
+  },
   removeOp: async (index) => {
     clearTimeout(nudgeTimer);
     set({ nudge: null });
@@ -374,7 +390,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 // The document lives on the server only for the session's TTL and the page keeps no handle to it.
 window.addEventListener('beforeunload', (e) => {
   const s = useEditor.getState();
-  if (!s.ops.length || s.revision === s.downloadedRevision) return;
+  if (!hasUnsaved(s)) return;
   e.preventDefault();
   // Older Chrome/Safari only show the prompt when returnValue is set.
   e.returnValue = '';

@@ -17,7 +17,7 @@ async function textItems(bytes: Uint8Array) {
 
 async function open(page: Page, name: string) {
   await page.goto('/');
-  await page.getByRole('button', { name: 'edit', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
   await page.getByTestId('editor-input').setInputFiles(fixture(name));
   await expect(page.getByTestId('overlay')).toBeVisible();
 }
@@ -35,6 +35,31 @@ test('download right after a nudge includes the move', async ({ page }) => {
   const original = await textItems(new Uint8Array(readFileSync(fixture('latin-standard14.pdf'))));
   const before = original.find((i) => i.str === 'Quarterly Report')!;
   expect(edited.find((i) => i.str === 'Quarterly Report')!.x).toBeCloseTo(before.x + 3, 3);
+});
+
+test('page keys stay off under the shortcut help; unsaved marker and Ctrl+S download', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  const box = page.getByTestId('text-box').first();
+  await box.click();
+  await page.keyboard.press('ArrowRight');
+  await expect(changes(page)).toHaveCount(1);
+  await expect(page.getByTestId('unsaved')).toBeVisible();
+
+  await page.keyboard.press('?');
+  await expect(page.getByTestId('shortcuts')).toBeVisible();
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Delete');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('shortcuts')).toBeHidden();
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('(1.0, 0.0 pt)');
+
+  const [download] = await Promise.all([page.waitForEvent('download'), page.keyboard.press('Control+s')]);
+  expect(download.suggestedFilename()).toBe('latin-standard14-edited.pdf');
+  await expect(page.getByTestId('unsaved')).toBeHidden();
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('(1.0, 0.0 pt)');
 });
 
 test('arrange pages of an edited PDF, then edit the result', async ({ page }) => {
@@ -57,6 +82,7 @@ test('arrange pages of an edited PDF, then edit the result', async ({ page }) =>
   await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
   await expect(page.getByTestId('page-thumb')).toHaveCount(3);
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  expect(download.suggestedFilename()).toBe('latin-standard14-edited-merged.pdf');
   const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
   expect(doc.numPages).toBe(3);
   expect((await doc.getPage(1)).rotate).toBe(90);
@@ -99,9 +125,54 @@ test('page tools in the editor: reorder, blank, rotate and delete are changes th
   expect(first.text).toBe((await pdfText(new Uint8Array(readFileSync(fixture('latin-standard14.pdf'))), 2)).text);
   expect((await pdfText(bytes, 2)).text).toBe('');
 
-  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await page.getByTitle('Undo (Ctrl + Z)').click();
   await expect.poll(order).toEqual([1, 0, 2]);
   await expect(changes(page)).toHaveCount(3);
+});
+
+test('duplicate page: the copy is edited on its own in the editor; Merge repeats a page', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  const thumbs = page.getByTestId('page-thumb');
+  const order = () => thumbs.evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-page'))));
+  await thumbs.nth(0).hover();
+  await thumbs.nth(0).getByTestId('thumb-duplicate').click();
+  await expect.poll(order).toEqual([0, 2, 1]);
+  await thumbs.nth(1).click();
+  await expect(page.getByTestId('page-jump')).toHaveValue('2');
+  const box = page.getByTestId('text-box').first();
+  await expect(box).toHaveAttribute('data-box-id', /^b-p2-/);
+  await box.click();
+  await box.click();
+  await expect(page.getByTestId('box-editor')).toBeFocused();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('Copy Report');
+  await page.keyboard.press('Control+Enter');
+  await expect(changes(page)).toHaveCount(2);
+
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  const text = async (n: number) => (await (await doc.getPage(n)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');
+  expect(doc.numPages).toBe(3);
+  expect(await text(1)).toContain('Quarterly Report');
+  expect(await text(1)).not.toContain('Copy Report');
+  expect(await text(2)).toContain('Copy Report');
+  expect(await text(2)).not.toContain('Quarterly Report');
+  await doc.destroy();
+
+  await page.getByRole('button', { name: 'Merge & Pages', exact: true }).click();
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(2);
+  await items.nth(1).hover();
+  await items.nth(1).getByTestId('page-duplicate').click();
+  await expect(items).toHaveCount(3);
+  const [merged] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /Merge & download/ }).click()]);
+  expect(merged.suggestedFilename()).toBe('latin-standard14-merged.pdf');
+  const out = await getDocument({ data: new Uint8Array(readFileSync((await merged.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  expect(out.numPages).toBe(3);
+  const t = async (n: number) => (await (await out.getPage(n)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');
+  expect(await t(3)).toBe(await t(2));
+  await out.destroy();
 });
 
 test('edit text, nudge, restyle, undo one change and download', async ({ page }) => {
@@ -148,6 +219,19 @@ test('edit text, nudge, restyle, undo one change and download', async ({ page })
   expect(after.x).toBeCloseTo(before.x + 3, 3);
   expect(after.y).toBeCloseTo(before.y - 10, 3);
   expect(edited.map((i) => i.str)).not.toContain('Edited title');
+
+  await page.getByTestId('revert-all').click();
+  await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
+  await expect(changes(page)).toHaveCount(0);
+  await page.keyboard.press('Control+Shift+z');
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('Move');
+
+  await expect(page.getByTestId('page-count')).toHaveText('/ 2');
+  await page.getByTestId('page-jump').fill('2');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('page-thumb').nth(1).locator('[aria-current="page"]')).toBeVisible();
+  await expect(page.getByTestId('page-jump')).toHaveValue('2');
 });
 
 test('table: Tab moves between cell editors, dragging a border resizes the column', async ({ page }) => {

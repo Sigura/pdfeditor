@@ -221,7 +221,9 @@ export function Inspector() {
               </Row>
             )}
             <p>Select a text box or a table cell to see its properties.</p>
-            <p className="pt-2">Keys: arrows nudge 1 pt (Shift 10), Enter edits, Esc deselects, Delete removes, Ctrl+Z / Ctrl+Shift+Z undo and redo. In tables, arrows and Tab move between cells. Alt while dragging turns snapping off. Click a table's violet handle to select the whole table; arrows nudge it.</p>
+            <p className="pt-2">
+              Press <kbd className="rounded border border-slate-300 px-1 font-mono">?</kbd> for keyboard shortcuts.
+            </p>
           </div>
         )}
       </div>

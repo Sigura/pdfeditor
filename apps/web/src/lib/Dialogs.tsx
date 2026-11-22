@@ -12,6 +12,9 @@ function cancelOpen() {
   else if (a) a.resolve(false);
 }
 
+/** Whether a modal dialog is open; page shortcuts stay off then, wherever the focus is. */
+export const modalOpen = () => !!document.querySelector('[aria-modal="true"]');
+
 /** Asks for a PDF password in a dialog; null when the user cancels. */
 export function askPassword(message: string): Promise<string | null> {
   cancelOpen();
@@ -72,7 +75,7 @@ export function Dialogs() {
           <button type="button" className="rounded px-3 py-1.5 hover:bg-slate-100" onClick={() => done(false)}>
             Cancel
           </button>
-          <button ref={okRef} type="submit" data-testid="dialog-ok" className="rounded bg-slate-900 px-3 py-1.5 text-white">
+          <button ref={okRef} type="submit" data-testid="dialog-ok" className="rounded bg-sky-600 px-3 py-1.5 text-white hover:bg-sky-700">
             {password ? 'Open' : ask.ok}
           </button>
         </div>

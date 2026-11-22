@@ -1,18 +1,28 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
-import { PdfError, mergePdfs, type MergeInput } from '@pdf-toolkit/pdf-core';
+import { PdfError, mergePdfs, type BlankPage, type MergeInput } from '@pdf-toolkit/pdf-core';
 
 const USAGE = `Usage:
-  pdf-tool merge <file[:ranges]>... -o <out.pdf> [--password <file>=<pw>]...
+  pdf-tool merge <input>... -o <out.pdf> [--password <file>=<pw>]...
+
+An input is a file with optional page ranges and rotation, <file>[:<ranges>][@90|@180|@270],
+or the word "blank" for an empty page the size of the page before it (use ./blank for a file named blank).
 
 Examples:
   pdf-tool merge a.pdf b.pdf:1-3 -o out.pdf
+  pdf-tool merge scan.pdf@90 blank notes.pdf:2-4@180 -o out.pdf
   pdf-tool merge secret.pdf:2- --password secret.pdf=hunter2 -o out.pdf`;
 
-/** Splits "path:ranges" at the last colon followed by a valid range spec, so "C:\\x.pdf" still works. */
-export function splitFileArg(arg: string): { path: string; pages?: string } {
-  const m = /^(.*):([\d\s,\-]+)$/.exec(arg);
-  return m && m[1] ? { path: m[1], pages: m[2] } : { path: arg };
+/**
+ * Splits "path:ranges@rotate" (both parts optional) at the last colon followed by a valid range spec,
+ * so "C:\\x.pdf" still works.
+ */
+export function splitFileArg(arg: string): { path: string; pages?: string; rotate?: number } {
+  const r = /^(.+)@(90|180|270)$/.exec(arg);
+  const rest = r ? r[1]! : arg;
+  const rotate = r ? Number(r[2]) : undefined;
+  const m = /^(.*):([\d\s,\-]+)$/.exec(rest);
+  return { ...(m && m[1] ? { path: m[1], pages: m[2] } : { path: rest }), ...(rotate && { rotate }) };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -35,10 +45,14 @@ async function main(argv: string[]): Promise<number> {
     const i = p.indexOf('=');
     if (i > 0) passwords.set(p.slice(0, i), p.slice(i + 1));
   }
-  const inputs: MergeInput[] = [];
+  const inputs: (MergeInput | BlankPage)[] = [];
   for (const arg of positionals) {
-    const { path, pages } = splitFileArg(arg);
-    inputs.push({ file: new Uint8Array(await readFile(path)), pages, password: passwords.get(path), name: path.split(/[\\/]/).pop()?.replace(/\.pdf$/i, '') });
+    if (arg === 'blank') {
+      inputs.push({ blank: true });
+      continue;
+    }
+    const { path, pages, rotate } = splitFileArg(arg);
+    inputs.push({ file: new Uint8Array(await readFile(path)), pages, rotate, password: passwords.get(path), name: path.split(/[\\/]/).pop()?.replace(/\.pdf$/i, '') });
   }
   const out = await mergePdfs(inputs);
   await writeFile(values.output, out);
