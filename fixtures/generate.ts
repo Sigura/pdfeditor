@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fontkit from '@pdf-lib/fontkit';
-import { PDFDocument, PDFName, PDFRawStream, StandardFonts, concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, PDFHexString, PDFName, PDFRawStream, StandardFonts, concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 
 const require = createRequire(import.meta.url);
 const pdfjsDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
@@ -37,6 +37,15 @@ async function latinStandard14() {
   p2.drawText('Page two heading', { x: 60, y: 770, size: 18, font: helvBold });
   paragraph(p2, ['Text on the second page.'], 60, 730, helv, 12);
   await save('latin-standard14.pdf', doc);
+}
+
+/** Four pages labelled i, ii, A-1, A-2 (/PageLabels): front matter in roman numerals, then prefixed numbers. */
+async function labelled() {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  for (const label of ['i', 'ii', 'A-1', 'A-2']) doc.addPage([400, 300]).drawText(`Page labelled ${label}`, { x: 40, y: 250, size: 14, font: helv });
+  doc.catalog.set(PDFName.of('PageLabels'), doc.context.obj({ Nums: [0, { S: 'r' }, 2, { S: 'D', P: PDFHexString.fromText('A-') }] }));
+  await save('labelled.pdf', doc);
 }
 
 async function embeddedSubset(name: string, lines: string[], heading: string) {
@@ -509,6 +518,7 @@ async function pagedScanJpeg() {
 
 await mkdir(outDir, { recursive: true });
 await latinStandard14();
+await labelled();
 await embeddedSubset('cyrillic-subset.pdf', ['Привет, мир! Это проверка редактора.', 'Съешь же ещё этих мягких французских булок.'], 'Отчёт за квартал');
 await embeddedSubset('turkish-subset.pdf', ["Şişli'de ılık bir gün geçirdik.", 'İğdır, Çanakkale ve Muğla şehirleri.'], 'Türkçe Başlık');
 await simpleTrueType();

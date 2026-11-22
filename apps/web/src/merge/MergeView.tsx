@@ -11,14 +11,15 @@ const mb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
 
 const COLORS = ['bg-sky-500', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500', 'bg-violet-500', 'bg-lime-500'];
 
-async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount: number; password?: string }> {
+async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount: number; password?: string; labels: string[] | null }> {
   let password: string | undefined;
   for (;;) {
     try {
       const doc = await pdfjs.getDocument({ data: bytes.slice(), password, isEvalSupported: false }).promise;
       const pageCount = doc.numPages;
+      const labels = await doc.getPageLabels();
       await doc.destroy();
-      return { pageCount, password };
+      return { pageCount, password, labels };
     } catch (e) {
       if (e instanceof Error && e.name === 'PasswordException') {
         const pw = await askPassword(password === undefined ? `${name} is password-protected.` : `Wrong password for ${name}. Try again.`);
@@ -74,8 +75,8 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
         step(inputs.length > 1 ? `Reading ${f.name} (${i + 1}/${inputs.length})…` : `Reading ${f.name}…`);
         try {
           const bytes = await f.read();
-          const { pageCount, password } = await countPages(bytes, f.name);
-          addFile({ id: crypto.randomUUID(), name: f.name, bytes, pageCount, password });
+          const { pageCount, password, labels } = await countPages(bytes, f.name);
+          addFile({ id: crypto.randomUUID(), name: f.name, bytes, pageCount, password, labels });
         } catch (e) {
           errors.push((e as Error).message);
         }
@@ -304,7 +305,12 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                   <div className="mt-1 flex items-center gap-1 text-xs text-slate-600">
                     <span className={`h-2 w-2 rounded-full ${color}`} />
                     <span className="max-w-[110px] truncate">{file ? file.name : 'Blank'}</span>
-                    {file && <span className="ml-auto">p.{p.pageIndex + 1}</span>}
+                    {file && (
+                      <span className="ml-auto whitespace-nowrap">
+                        p.{p.pageIndex + 1}
+                        {file.labels?.[p.pageIndex] && file.labels[p.pageIndex] !== String(p.pageIndex + 1) && <span className="text-slate-400" title="Page label"> · {file.labels[p.pageIndex]}</span>}
+                      </span>
+                    )}
                   </div>
                   <div className="absolute top-2 right-2 hidden gap-1 group-hover:flex group-focus-within:flex">
                     {file && (

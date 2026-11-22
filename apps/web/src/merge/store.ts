@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { releasePdfDocs } from './Thumbnail.tsx';
 
-export type SourceFile = { id: string; name: string; bytes: Uint8Array; pageCount: number; password?: string };
+/** `labels`: the file's page labels (/PageLabels) by page index, if it has any. */
+export type SourceFile = { id: string; name: string; bytes: Uint8Array; pageCount: number; password?: string; labels?: string[] | null };
 /**
  * A page of a source file, or a blank page (`fileId` BLANK). `rotate`: degrees added to the page's rotation.
  * `copyOf`: the key of the page it duplicates, so the server can share that page's content.

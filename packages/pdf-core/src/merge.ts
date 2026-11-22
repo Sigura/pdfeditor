@@ -72,6 +72,8 @@ export async function arrangePdf(bytes: Uint8Array, order: { page: number; rotat
   const removed = new Set(pages.map((p) => p.ref).filter((r) => !kept.has(r)));
   pruneOutline(doc, removed);
   pruneLinks(doc, refs, removed);
+  const label = readPageLabels(doc);
+  if (label) writePageLabels(doc, order.map(({ page }) => label(page)));
   return snapshot ? writeIncremental(bytes, doc.context, snapshot) : doc.save({ useObjectStreams: false });
 }
 
@@ -91,11 +93,15 @@ export async function mergePdfs(inputs: (MergeInput | BlankPage | CopyPage)[]): 
     return page.getRotation().angle % 180 ? [height, width] : [width, height];
   };
   let leadingBlanks = 0;
+  // Page label of each output page from its file (null: a blank, a copy or a file without labels).
+  const labels: (PageLabel | null)[] = [];
   for (const [fileIndex, input] of inputs.entries()) {
     if ('blank' in input) {
       const last = out.getPageCount() ? out.getPage(out.getPageCount() - 1) : null;
-      if (last) out.addPage(shownSize(last));
-      else leadingBlanks++;
+      if (last) {
+        out.addPage(shownSize(last));
+        labels.push(null);
+      } else leadingBlanks++;
       continue;
     }
     if ('copy' in input) {
@@ -107,7 +113,11 @@ export async function mergePdfs(inputs: (MergeInput | BlankPage | CopyPage)[]): 
       // A leading blank only gets its size once the first real page exists.
       if (k >= 0) copyPage(out, k);
       else if (out.getPageCount()) out.addPage(shownSize(out.getPage(0)));
-      else leadingBlanks++;
+      else {
+        leadingBlanks++;
+        continue;
+      }
+      labels.push(null);
       continue;
     }
     let src: PDFDocument;
@@ -133,6 +143,8 @@ export async function mergePdfs(inputs: (MergeInput | BlankPage | CopyPage)[]): 
       }
     }
 
+    const srcLabel = readPageLabels(src);
+    labels.push(...indices.map((k) => srcLabel?.(k) ?? null));
     const copied = await out.copyPages(src, indices);
     const firstOutputRef = new Map<number, PDFRef>();
     copied.forEach((page, k) => {
@@ -185,6 +197,8 @@ export async function mergePdfs(inputs: (MergeInput | BlankPage | CopyPage)[]): 
 
   const size = out.getPageCount() ? shownSize(out.getPage(0)) : A4;
   for (let i = 0; i < leadingBlanks; i++) out.insertPage(0, size);
+  labels.unshift(...Array.from({ length: leadingBlanks }, () => null));
+  if (labels.some((l) => l)) writePageLabels(out, labels);
 
   if (fieldRoots.length > 0) {
     const acro = out.context.obj({ Fields: out.context.obj(fieldRoots) });
@@ -195,6 +209,67 @@ export async function mergePdfs(inputs: (MergeInput | BlankPage | CopyPage)[]): 
   }
   writeOutline(out, fileOutlines);
   return out.save({ useObjectStreams: true });
+}
+
+/** A page's label as a /PageLabels range gives it: style, prefix and its own number. */
+type PageLabel = { style?: string; prefix?: string; n: number };
+
+/** The label of each page index from the catalog's /PageLabels number tree, or null when there is none. */
+function readPageLabels(doc: PDFDocument): ((page: number) => PageLabel) | null {
+  const root = doc.catalog.lookupMaybe(N('PageLabels'), PDFDict);
+  if (!root) return null;
+  const ranges: { start: number; style?: string; prefix?: string; first: number }[] = [];
+  const walk = (node: PDFDict, depth: number) => {
+    if (depth > 32) return;
+    const nums = node.lookupMaybe(N('Nums'), PDFArray);
+    for (let i = 0; nums && i + 1 < nums.size(); i += 2) {
+      const key = nums.lookup(i);
+      const dict = nums.lookup(i + 1);
+      if (!(key instanceof PDFNumber) || !(dict instanceof PDFDict)) continue;
+      const s = dict.lookup(N('S'));
+      const p = dict.lookup(N('P'));
+      const st = dict.lookup(N('St'));
+      ranges.push({
+        start: key.asNumber(),
+        style: s instanceof PDFName ? s.decodeText() : undefined,
+        prefix: p instanceof PDFString || p instanceof PDFHexString ? p.decodeText() : undefined,
+        first: st instanceof PDFNumber ? st.asNumber() : 1,
+      });
+    }
+    const kids = node.lookupMaybe(N('Kids'), PDFArray);
+    for (let i = 0; kids && i < kids.size(); i++) {
+      const kid = kids.lookup(i);
+      if (kid instanceof PDFDict) walk(kid, depth + 1);
+    }
+  };
+  walk(root, 0);
+  if (!ranges.length) return null;
+  ranges.sort((a, b) => a.start - b.start);
+  return (page) => {
+    const r = ranges.findLast((x) => x.start <= page);
+    // Pages before the first range have no label; they show as their position.
+    if (!r) return { style: 'D', n: page + 1 };
+    return { style: r.style, prefix: r.prefix, n: r.first + page - r.start };
+  };
+}
+
+/** Writes /PageLabels with a new range wherever a page doesn't continue the previous one; null: decimal page position. */
+function writePageLabels(doc: PDFDocument, labels: (PageLabel | null)[]): void {
+  const ctx = doc.context;
+  const nums: PDFObject[] = [];
+  let prev: PageLabel | undefined;
+  labels.forEach((l, i) => {
+    const cur = l ?? { style: 'D', n: i + 1 };
+    if (!prev || prev.style !== cur.style || prev.prefix !== cur.prefix || cur.n !== prev.n + 1) {
+      const dict = ctx.obj({});
+      if (cur.style) dict.set(N('S'), N(cur.style));
+      if (cur.prefix !== undefined) dict.set(N('P'), PDFHexString.fromText(cur.prefix));
+      if (cur.n !== 1) dict.set(N('St'), PDFNumber.of(cur.n));
+      nums.push(PDFNumber.of(i), dict);
+    }
+    prev = cur;
+  });
+  doc.catalog.set(N('PageLabels'), ctx.obj({ Nums: ctx.obj(nums) }));
 }
 
 type DestResolver = (d: PDFObject | undefined) => PDFArray | null;

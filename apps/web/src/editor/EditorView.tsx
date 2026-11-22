@@ -12,7 +12,7 @@ import { arrangement, hasUnsaved, pageNo, pageOrder, resumeDocument, track, useE
 import { StraightenBar, TiltBanner } from './Deskew.tsx';
 
 /** `content` identifies what the page shows: the thumbnail is rendered again only when it changes. */
-function Thumb({ pdf, index, no, rotate, content, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; content: string; active: boolean; changes: number; onClick: () => void }) {
+function Thumb({ pdf, index, no, label, rotate, content, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; label?: string; rotate: number; content: string; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
   const shownContent = useRef<string>(undefined);
   const url = useRef<string>(undefined);
@@ -45,7 +45,10 @@ function Thumb({ pdf, index, no, rotate, content, active, changes, onClick }: { 
       ) : (
         <div className="h-36 animate-pulse bg-slate-200" />
       )}
-      <div className="mt-1 text-center text-xs text-slate-600">{no}</div>
+      <div className="mt-1 text-center text-xs text-slate-600" data-testid="thumb-no">
+        {no}
+        {label && label !== String(no) && <span className="text-slate-400" title="Page label"> · {label}</span>}
+      </div>
       {changes > 0 && (
         <span data-testid="thumb-changes" title={`${changes} change${changes > 1 ? 's' : ''} on this page`} className="absolute top-0 right-0 min-w-4 rounded-full bg-amber-500 px-1 text-[10px] leading-4 text-white">
           {changes}
@@ -155,7 +158,7 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
               move(Number(e.dataTransfer.getData(PAGE_DRAG)), k);
             }}
           >
-            <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} content={contentKeys.current[k] ?? ''} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
+            <Thumb pdf={pdf} index={k} no={i + 1} label={st.pageLabels?.[k]} rotate={rotation(k)} content={contentKeys.current[k] ?? ''} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
             {own && (
               <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-focus-within:flex group-hover:flex">
                 <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise (Shift+click or Shift+R: counter-clockwise)" aria-label="Rotate page" onClick={(e) => void rotate(k, e.shiftKey ? -90 : 90)}>
@@ -308,6 +311,11 @@ function PageJump() {
         }}
       />
       <span className="tabular-nums" data-testid="page-count">/ {order.length}</span>
+      {st.pageLabels?.[st.pageIndex] && st.pageLabels[st.pageIndex] !== String(current) && (
+        <span data-testid="page-label" className="text-xs text-slate-400" title="Page label">
+          ({st.pageLabels[st.pageIndex]})
+        </span>
+      )}
       {invalid && <span role="status" className="text-xs text-red-600">pages 1–{order.length}</span>}
     </label>
   );
@@ -394,6 +402,8 @@ export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }
       shown.current = loaded;
       setPdf(loaded);
       setPdfRevision(revision);
+      const pageLabels = await loaded.getPageLabels();
+      if (alive) useEditor.setState({ pageLabels });
       if (old) void old.destroy();
     })().catch((e: Error) => useEditor.getState().setError(e.message));
     return () => {

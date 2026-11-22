@@ -3,7 +3,29 @@ import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFNumber, type 
 import { arrangePdf, mergePdfs } from '../src/merge.ts';
 import { addInternalLink, encryptRc4, makePdf } from './helpers.ts';
 
+/** /PageLabels as [start, style, prefix, first number] per range. */
+const labelRanges = (doc: PDFDocument) => {
+  const nums = doc.catalog.lookup(PDFName.of('PageLabels'), PDFDict).lookup(PDFName.of('Nums'), PDFArray);
+  const out: unknown[] = [];
+  for (let i = 0; i < nums.size(); i += 2) {
+    const d = nums.lookup(i + 1, PDFDict);
+    const p = d.lookup(PDFName.of('P'));
+    out.push([nums.lookup(i, PDFNumber).asNumber(), d.lookup(PDFName.of('S'))?.toString().slice(1), p instanceof PDFHexString ? p.decodeText() : undefined, d.lookupMaybe(PDFName.of('St'), PDFNumber)?.asNumber() ?? 1]);
+  }
+  return out;
+};
+
 describe('mergePdfs', () => {
+  it('carries page labels over; pages of files without labels and blanks are numbered by position', async () => {
+    const a = await makePdf(3, 'A');
+    a.catalog.set(PDFName.of('PageLabels'), a.context.obj({ Nums: [0, { S: 'r' }] }));
+    const b = await makePdf(2, 'B');
+    const out = await PDFDocument.load(await mergePdfs([{ file: await a.save() , pages: '2-3' }, { blank: true }, { file: await b.save() }]));
+    expect(labelRanges(out)).toEqual([[0, 'r', undefined, 2], [2, 'D', undefined, 3]]);
+    const plain = await PDFDocument.load(await mergePdfs([{ file: await b.save() }]));
+    expect(plain.catalog.has(PDFName.of('PageLabels'))).toBe(false);
+  });
+
   it('concatenates ranges keeping size, rotation and file bookmarks', async () => {
     const a = await makePdf(3, 'A', { size: [300, 400] });
     const b = await makePdf(5, 'B', { size: [500, 200], rotate: 90 });
@@ -98,6 +120,14 @@ describe('mergePdfs', () => {
 });
 
 describe('arrangePdf', () => {
+  it('keeps each page its label when pages move or go', async () => {
+    const doc = await makePdf(4, 'A');
+    const ctx = doc.context;
+    doc.catalog.set(PDFName.of('PageLabels'), ctx.obj({ Nums: [0, { S: 'r' }, 2, { S: 'D', P: PDFHexString.fromText('A-') }] }));
+    const out = await PDFDocument.load(await arrangePdf(await doc.save({ useObjectStreams: false }), [{ page: 2 }, { page: 0 }, { page: 1 }, { page: 3 }]));
+    expect(labelRanges(out)).toEqual([[0, 'D', 'A-', 1], [1, 'r', undefined, 1], [3, 'D', 'A-', 2]]);
+  });
+
   it('removes links to removed pages from the pages it keeps', async () => {
     const doc = await makePdf(3, 'A');
     const [p0, p1, p2] = doc.getPages() as [PDFPage, PDFPage, PDFPage];

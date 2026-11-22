@@ -63,3 +63,4 @@ A new push to the same branch cancels the run still in progress.
 | `paged-table.pdf` | 2 pages with a running header (text + rule) and a "Page N" footer; page 1 ends with a 4 × 4 table (2 pt outer top/bottom border) and a line under it, page 2 has body text (table paging) |
 | `paged-scan.pdf` | one scanned page at 2 px/pt (Flate, grey): header and footer bars, text bars, a bordered 4 × 4 table near the bottom and a bar below it |
 | `paged-scan-jpeg.pdf` | the same scan stored as a JPEG (DCTDecode, RGB), like most scanner output |
+| `labelled.pdf` | 4 pages with page labels i, ii, A-1, A-2 (`/PageLabels`) |

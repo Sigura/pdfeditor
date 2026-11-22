@@ -1037,3 +1037,25 @@ test('find and replace: Ctrl+F finds cells and boxes, Enter selects the match, R
   await page.getByTestId('find-input').press('Escape');
   await expect(page.getByTestId('find-bar')).toHaveCount(0);
 });
+
+test('page labels show on thumbnails, in the page box and in Merge; the download keeps them on their pages', async ({ page }) => {
+  await open(page, 'labelled.pdf');
+  const nos = page.getByTestId('thumb-no');
+  await expect(nos).toHaveText(['1 · i', '2 · ii', '3 · A-1', '4 · A-2']);
+  await expect(page.getByTestId('page-label')).toHaveText('(i)');
+  await page.getByTestId('page-thumb').nth(2).locator('> button').focus();
+  await page.keyboard.press('Alt+ArrowUp');
+  await expect(changes(page)).toHaveCount(1);
+  await page.getByTestId('page-thumb').nth(3).hover();
+  await page.getByTestId('page-thumb').nth(3).getByTestId('thumb-delete').click();
+  await expect(changes(page)).toHaveCount(2);
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  expect(await doc.getPageLabels()).toEqual(['i', 'A-1', 'ii']);
+  await doc.destroy();
+
+  await page.evaluate(() => sessionStorage.clear());
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('labelled.pdf'));
+  await expect(page.getByTestId('merge-page').nth(2)).toContainText('p.3 · A-1');
+});

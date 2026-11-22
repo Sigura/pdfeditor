@@ -87,6 +87,8 @@ export type EditorState = {
   tableSetup: SetupDraft | null;
   /** Bumped after each page render, so pixel-based colour detection re-reads the canvas. */
   renderCount: number;
+  /** Page labels of the shown PDF by page index (/PageLabels), null when it has none. */
+  pageLabels: string[] | null;
   /** A file handed over from another tab (Merge's "Edit result"), opened by the editor when it mounts. */
   incoming: File | null;
   setIncoming: (f: File | null) => void;
@@ -157,6 +159,7 @@ const initial = {
   nudge: null,
   tableSetup: null,
   renderCount: 0,
+  pageLabels: null as string[] | null,
   incoming: null as File | null,
 };
 
