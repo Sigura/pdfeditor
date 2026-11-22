@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentInfo, EditOperation } from '@pdf-toolkit/shared';
 import { apiError, downloadBlob } from '../lib/api.ts';
-import { askConfirm, askPassword, modalOpen } from '../lib/Dialogs.tsx';
+import { askConfirm, askPassword, modalOpen, useModalFocus } from '../lib/Dialogs.tsx';
 import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
 import { opPage } from './Changes.tsx';
 import { FontPicker } from './FontPicker.tsx';
@@ -176,6 +176,8 @@ function PromptDialog() {
   const { prompt, setPrompt, revert, edit, busy, ops, pages } = useEditor();
   const [repeat, setRepeat] = useState(true);
   const [numbers, setNumbers] = useState<'keep' | 'omit'>('omit');
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(ref, prompt);
   useEffect(() => {
     setRepeat(true);
     setNumbers('omit');
@@ -214,8 +216,10 @@ function PromptDialog() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" data-testid="prompt">
       <div
+        ref={ref}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="prompt-text"
         className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl"
         onKeyDown={(e) => {
           if (e.key !== 'Escape' || busy) return;
@@ -223,7 +227,7 @@ function PromptDialog() {
           choices.find((c) => c.testId === 'prompt-cancel')?.run();
         }}
       >
-        <p className="mb-3">{text}</p>
+        <p id="prompt-text" className="mb-3">{text}</p>
         {prompt.kind === 'newPage' && prompt.tableIds.length > 0 && (
           <div className="mb-2">
             <div className="mb-1">Repeat header rows on the continued part?</div>
@@ -317,12 +321,14 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(ref, true);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" data-testid="shortcuts" className="w-[30rem] rounded-lg bg-white p-4 text-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div ref={ref} role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" data-testid="shortcuts" className="w-[30rem] rounded-lg bg-white p-4 text-sm shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center">
           <h2 id="shortcuts-title" className="flex-1 font-semibold">Keyboard shortcuts</h2>
-          <button aria-label="Close" className="rounded px-2 hover:bg-slate-100" onClick={onClose}>
+          <button aria-label="Close" autoFocus className="rounded px-2 hover:bg-slate-100" onClick={onClose}>
             ×
           </button>
         </div>

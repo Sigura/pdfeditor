@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { create } from 'zustand';
 
 type Ask =
@@ -10,6 +10,47 @@ function cancelOpen() {
   const a = useAsk.getState().ask;
   if (a?.kind === 'password') a.resolve(null);
   else if (a) a.resolve(false);
+}
+
+// The focus to give back when a modal closes: autoFocus inside a modal happens before its effects run.
+let lastOutside: HTMLElement | null = null;
+document.addEventListener(
+  'focusin',
+  (e) => {
+    if (e.target instanceof HTMLElement && !e.target.closest('[aria-modal="true"]')) lastOutside = e.target;
+  },
+  true,
+);
+
+/**
+ * Keeps Tab inside the modal `ref` while it is shown and gives the focus back to where it was when it closes.
+ * `open` changes when another dialog takes the same element.
+ */
+export function useModalFocus(ref: RefObject<HTMLElement | null>, open: unknown) {
+  useEffect(() => {
+    if (!open) return;
+    const before = lastOutside;
+    const onKey = (e: KeyboardEvent) => {
+      const el = ref.current;
+      if (e.key !== 'Tab' || !el) return;
+      const items = Array.from(el.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')).filter((x) => !(x as HTMLButtonElement).disabled);
+      if (!items.length) return;
+      const [first, last] = [items[0]!, items.at(-1)!];
+      const inside = el.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      if (before?.isConnected && (document.activeElement === document.body || !document.activeElement)) before.focus({ preventScroll: true });
+    };
+  }, [ref, open]);
 }
 
 /** Whether a modal dialog is open; page shortcuts stay off then, wherever the focus is. */
@@ -32,6 +73,8 @@ export function Dialogs() {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const okRef = useRef<HTMLButtonElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  useModalFocus(formRef, !!ask);
   useEffect(() => {
     setValue('');
     (inputRef.current ?? okRef.current)?.focus();
@@ -44,8 +87,9 @@ export function Dialogs() {
   };
   const password = ask.kind === 'password';
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" onClick={(e) => e.target === e.currentTarget && done(false)}>
       <form
+        ref={formRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="dialog-title"

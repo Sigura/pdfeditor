@@ -876,3 +876,27 @@ test('Esc: leaves table setup (Step 1 and the mesh), returns to the Select tool,
   await expect(x).not.toBeFocused();
   await expect(changes(page)).toHaveCount(0);
 });
+
+test('dialogs keep Tab inside, give the focus back on close and cancel on a backdrop click', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  await expect(page.getByTestId('merge-page')).toHaveCount(2);
+  const clear = page.getByTestId('merge-clear');
+  await clear.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByTestId('confirm-dialog');
+  await expect(page.getByTestId('dialog-ok')).toBeFocused();
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('Tab');
+    expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+  }
+  await page.keyboard.press('Shift+Tab');
+  expect(await dialog.evaluate((d) => d.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(clear).toBeFocused();
+  await clear.click();
+  await page.mouse.click(5, 5);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('merge-page')).toHaveCount(2);
+});
