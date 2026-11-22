@@ -482,13 +482,14 @@ test('scanned table: Confirm sends the ink box of every cell, a row border stops
   const [, size, min] = (await readout.textContent())!.match(/^row 2: ([\d.]+) pt \(min ([\d.]+) pt: ink\)$/)!;
   expect(size).toBe(min);
   expect(Math.abs(Number(min) - 18.25)).toBeLessThanOrEqual(0.3); // one 4× pixel + the readout's rounding
-  const resized = page.waitForRequest((r) => r.url().endsWith('/edits') && r.method() === 'POST');
+  const resized = page.waitForResponse((r) => r.url().endsWith('/edits') && r.request().method() === 'POST');
   await page.mouse.up();
-  const heights = (await resized).postDataJSON().ops[0].rowHeights as number[];
+  const res = await resized;
+  const heights = res.request().postDataJSON().ops[0].rowHeights as number[];
   expect(heights[1]!.toFixed(1)).toBe(min);
-  // The reflow below the table reaches a scanned page, so the editor then measures its layout and sends it.
-  const three = [/Table setup 5×4/, /Resize table rows/, /Scan layout of page 1/];
-  await expect(changes(page)).toHaveText(three, { timeout: 15_000 });
+  // The shrink only moves the scan below the table up, so the page needs no measured layout (no Scan layout op).
+  expect((await res.json()).overflows).toEqual([]);
+  await expect(changes(page)).toHaveText([/Table setup 5×4/, /Resize table rows/]);
   await expect(page.getByTestId('editor-error')).toHaveCount(0);
 
   // The Inspector's height field has the same minimum: smaller values are reverted without a request.
@@ -498,7 +499,7 @@ test('scanned table: Confirm sends the ink box of every cell, a row border stops
   await height.fill('10');
   await height.press('Enter');
   await expect(height).toHaveValue(String(Number(heights[1]!.toFixed(2))));
-  await expect(changes(page)).toHaveText(three);
+  await expect(changes(page)).toHaveText([/Table setup 5×4/, /Resize table rows/]);
 });
 
 test('cell editor style bar: Esc cancels from the bar, a picked font keeps the editor focused, Tab walks back into the text', async ({ page }) => {

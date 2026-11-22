@@ -3,6 +3,8 @@ import { PDFDocument, PDFName } from 'pdf-lib';
 import { createApp } from '../src/app.ts';
 import { sanitizeFileName } from '../src/http.ts';
 import { splitFileArg } from '../src/cli.ts';
+import { config } from '../src/config.ts';
+import { configureFonts } from '@pdf-toolkit/pdf-core';
 import { makePdf } from '../../../packages/pdf-core/test/helpers.ts';
 
 describe('POST /api/merge', () => {
@@ -93,5 +95,22 @@ describe('documents API', () => {
     expect(dl.headers.get('content-disposition')).toContain('my doc.pdf');
     expect((await app.request('/api/documents/00000000-0000-0000-0000-000000000000/pages/0/model')).status).toBe(404);
     expect((await app.request('/api/documents/../../etc/pages/0/model')).status).toBe(404);
+  });
+});
+
+describe('GET /api/fonts/:id/sample.svg', () => {
+  it('draws the sample line as glyph paths, far smaller than the font file', async () => {
+    configureFonts({ dirs: [], bundled: config.bundledFonts, system: false });
+    const { app } = createApp();
+    const { fonts } = (await (await app.request('/api/fonts')).json()) as { fonts: { id: number; postscriptName: string }[] };
+    const arimo = fonts.find((f) => f.postscriptName === 'Arimo-Regular')!;
+    const res = await app.request(`/api/fonts/${arimo.id}/sample.svg`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/svg+xml');
+    const svg = await res.text();
+    expect(svg).toMatch(/^<svg [^>]*viewBox="0 -\d+ \d+ \d+"><path transform="scale\(1,-1\)" d="M[^"]+"\/><\/svg>$/);
+    const file = await (await app.request(`/api/fonts/${arimo.id}`)).arrayBuffer();
+    expect(svg.length * 10).toBeLessThan(file.byteLength);
+    expect((await app.request('/api/fonts/99999/sample.svg')).status).toBe(404);
   });
 });

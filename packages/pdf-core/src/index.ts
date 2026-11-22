@@ -10,4 +10,4 @@ export { applyEdits, removalOp, type ApplyResult } from './edit/apply.ts';
 export { deskewPdf } from './edit/deskew.ts';
 export { reduceEdits, type EditState, type BoxEdit } from './edit/reduce.ts';
 export { snapshotObjects, writeIncremental } from './save/incremental.ts';
-export { configureFonts, faceBytes, fontIndex, type FontFace, type FontLicense } from './fonts/lookup.ts';
+export { configureFonts, faceBytes, faceSampleSvg, fontIndex, type FontFace, type FontLicense } from './fonts/lookup.ts';

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { analyzePdf, applyEdits, arrangePdf, deskewPdf, faceBytes, fontIndex, mergePdfs, type BlankPage, type CopyPage, type FontFace, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
+import { analyzePdf, applyEdits, arrangePdf, deskewPdf, faceBytes, faceSampleSvg, fontIndex, mergePdfs, type BlankPage, type CopyPage, type FontFace, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
 import { EditBatchSchema, displayOrder, MergeRangesSchema, MergeSegmentsSchema, type DocumentInfo, type EditResult } from '@pdf-toolkit/shared';
 import { config } from './config.ts';
 import { HttpError, contentDisposition, errorResponse, readPdfFile } from './http.ts';
@@ -71,6 +71,16 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     const magic = new TextDecoder().decode(bytes.subarray(0, 4));
     const type = magic === 'wOFF' ? 'font/woff' : magic === 'wOF2' ? 'font/woff2' : magic === 'OTTO' ? 'font/otf' : 'font/ttf';
     return c.body(bytes, 200, { 'Content-Type': type, 'Cache-Control': 'private, max-age=3600' });
+  });
+
+  const samples = new Map<number, string>();
+  app.get('/api/fonts/:id/sample.svg', (c) => {
+    const id = Number(c.req.param('id'));
+    const face = listedFonts()[id];
+    if (!face) throw new HttpError(404, 'NOT_FOUND', 'No such font');
+    let svg = samples.get(id);
+    if (svg === undefined) samples.set(id, (svg = faceSampleSvg(face, 'The quick brown fox 123')));
+    return c.body(svg, 200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, max-age=3600' });
   });
 
   // multipart: files[] (ordered); optional `ranges` and `passwords` = JSON arrays aligned with files;

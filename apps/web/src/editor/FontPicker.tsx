@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { PageModel, TextRun } from '@pdf-toolkit/shared';
 import { installedFonts, type InstalledFont } from '../lib/api.ts';
 import type { PdfDoc } from '../lib/pdfjs.ts';
@@ -41,38 +41,11 @@ async function samples(pdf: PdfDoc, fonts: { name: string; run: TextRun }[]): Pr
   return out;
 }
 
-const sampleFaces = new Map<number, Promise<string>>();
-function loadSample(f: InstalledFont): Promise<string> {
-  let p = sampleFaces.get(f.id);
-  if (!p) {
-    const name = `installed-font-${f.id}`;
-    p = new FontFace(name, `url(/api/fonts/${f.id})`).load().then((face) => (document.fonts.add(face), name));
-    sampleFaces.set(f.id, p);
-  }
-  return p;
-}
-
-/** A sample line in the installed font, fetched once it scrolls into view (CJK fonts are many MB). */
+/** A sample line in the installed font, drawn by the server as SVG paths (CJK font files are many MB). */
 function Sample({ font }: { font: InstalledFont }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [family, setFamily] = useState<string | null>();
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver(([e]) => {
-      if (!e?.isIntersecting) return;
-      io.disconnect();
-      loadSample(font).then(setFamily, () => setFamily(null));
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [font]);
-  if (family === null) return <div className="h-6 text-xs text-slate-400">No preview</div>;
-  return (
-    <div ref={ref} className={family ? 'h-6 truncate' : 'h-6 animate-pulse rounded bg-slate-100'} style={family ? { fontFamily: `"${family}"`, fontSize: 16 } : undefined}>
-      {family && 'The quick brown fox 123'}
-    </div>
-  );
+  const [failed, setFailed] = useState(false);
+  if (failed) return <div className="h-6 text-xs text-slate-400">No preview</div>;
+  return <img data-testid="font-sample" src={`/api/fonts/${font.id}/sample.svg`} alt="The quick brown fox 123" loading="lazy" onError={() => setFailed(true)} className="h-6 max-w-full object-contain object-left" />;
 }
 
 function LicenseBadge({ font }: { font: InstalledFont }) {

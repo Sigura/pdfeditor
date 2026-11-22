@@ -1145,6 +1145,8 @@ describe('table paging (paged-table.pdf)', () => {
     const define = { type: 'defineTable' as const, tableId: 't-scan', pageIndex: 0, spans: [], vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), borderWidth: 1.5, headerRows: 1, origin: 'raster' as const, raster: { paper: grey(246), ink: grey(50) } };
     const rows = Array.from({ length: 6 }, () => ({ type: 'tableInsertRow' as const, tableId: 't-scan', index: 3, position: 'below' as const }));
     expect((await applyEdits(original, [define, ...rows])).overflows).toEqual([{ pageIndex: 0, by: 0, needsLayout: [0] }]);
+    // Deleting a row only moves the content below up, which can't leave the page: no layout needed.
+    expect((await applyEdits(original, [define, { type: 'tableDeleteRow', tableId: 't-scan', index: 2 }])).overflows).toEqual([]);
     const lines = [{ y0: 798, y1: 808 }, ...Array.from({ length: 16 }, (_, i) => ({ y0: 740 - i * 16, y1: 748 - i * 16 })), { y0: 100, y1: 108 }, { y0: 28, y1: 38 }];
     const layout = { type: 'scanLayout' as const, pageIndex: 0, lines, paper: grey(246) };
     const ask = await applyEdits(original, [define, ...rows, layout]);

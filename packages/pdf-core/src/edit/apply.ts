@@ -524,7 +524,8 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   });
   const flowOpts = { repeat: new Set([...continuation].flatMap(([id, yes]) => (yes ? [id] : []))), pageNumbers: flowOp?.pageNumbers };
   const plan = planFlowInOrder(flowPages, order, pageFlow, flowOpts);
-  const involved = (k: number) => plan.pages[k] !== undefined || reflows.some((rf) => rf.pageIndex === k);
+  // Content that only moves up can't leave its page, so it needs no measured layout.
+  const involved = (k: number) => plan.pages[k] !== undefined || reflows.some((rf) => rf.pageIndex === k && rf.shift < 0);
   const unmeasured = (order ?? analyses.map((a) => a.pageIndex)).map((k) => analyses[k]!).filter((a) => !a.model.editable && !scanLayouts.has(a.pageIndex));
   const firstUnmeasured = unmeasured.find((a) => involved(a.pageIndex));
   const overflows: PageOverflow[] = [];
