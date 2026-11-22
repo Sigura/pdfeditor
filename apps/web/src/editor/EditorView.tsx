@@ -324,7 +324,7 @@ const SHORTCUTS: [string, string][] = [
   ['Ctrl + S', 'Download'],
   ['Enter', 'Edit the selected box or cell'],
   ['Arrows (Shift: 10 pt)', 'Move the selection by 1 pt; in a table, go to the next cell'],
-  ['Tab / Shift + Tab', 'Next / previous table cell'],
+  ['Tab / Shift + Tab', 'Next / previous text box or table handle (selects it); in a selected table cell, the next / previous cell'],
   ['Delete', 'Remove the selected box or table; clear the selected cell'],
   ['Esc', 'Deselect; back to the Select tool; leave the table setup; close this list'],
   ['Alt while dragging', 'Turn snapping off'],

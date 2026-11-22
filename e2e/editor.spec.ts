@@ -981,3 +981,26 @@ test('a reload reopens the document with its changes; an expired one says so', a
   await page.reload();
   await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'true');
 });
+
+test('Tab reaches the text boxes and table handles on the page and selects them', async ({ page }) => {
+  await open(page, 'table.pdf');
+  await page.getByTestId('download').focus();
+  const active = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? '');
+  for (let i = 0; i < 60 && (await active()) !== 'table-handle'; i++) await page.keyboard.press('Tab');
+  expect(await active()).toBe('table-handle');
+  await expect(page.locator('[data-testid=table].outline-violet-600')).toHaveCount(1);
+  for (let i = 0; i < 10 && (await active()) !== 'text-box'; i++) await page.keyboard.press('Tab');
+  const first = await page.evaluate(() => document.activeElement!.getAttribute('data-box-id'));
+  await expect(page.getByTestId('inspector-box')).toBeVisible();
+  await expect(page.locator(`[data-box-id="${first}"]`)).toHaveClass(/outline-sky-600/);
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('box-editor')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(changes(page)).toHaveCount(0);
+
+  await page.getByTestId('text-box').nth(1).click();
+  await expect(page.getByTestId('box-editor')).toHaveCount(0);
+  await expect(page.getByTestId('inspector-box')).toBeVisible();
+});

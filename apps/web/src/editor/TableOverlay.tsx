@@ -201,6 +201,10 @@ export function TableOverlay({ table, vp, zoom, pdf }: { table: Table; vp: Viewp
         <div
           title="Drag to move the table, click to select it (arrow keys nudge, Delete removes)"
           data-testid="table-handle"
+          role="button"
+          tabIndex={tool === 'select' ? 0 : -1}
+          aria-label={`Table, ${table.rows.length} × ${table.cols.length}`}
+          onFocus={(e) => tool === 'select' && !tableSelected && e.currentTarget.matches(':focus-visible') && select(table.id)}
           className="pointer-events-auto absolute -top-4 -left-4 h-3.5 w-3.5 cursor-move rounded-sm bg-violet-500 text-[9px] leading-3.5 text-white"
           onMouseDown={(e) => tool === 'select' && startDrag(e, 'move', 0)}
           onClick={(e) => {

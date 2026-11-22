@@ -455,6 +455,11 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
                 key={b.id}
                 data-testid="text-box"
                 data-box-id={b.id}
+                role="button"
+                tabIndex={tool === 'select' ? 0 : -1}
+                aria-label={`Text box: ${b.text.replace(/\s+/g, ' ').slice(0, 80)}`}
+                // Tab selects the box; a mouse focus doesn't, or the click that follows would start editing.
+                onFocus={(e) => tool === 'select' && !selected && e.currentTarget.matches(':focus-visible') && select(b.id)}
                 title={`${b.runs[0] ? `${b.runs[0].fontName} ${b.runs[0].fontSize.toFixed(1)}pt` : 'Added text'}${editable ? (selected ? ' — drag to move, click to edit, Delete to remove' : ' — click to select') : ' — text cannot be decoded, not editable'}`}
                 onMouseEnter={() => hover(b.id)}
                 onMouseLeave={() => hover(null)}
