@@ -7,7 +7,8 @@ Merge PDFs and edit them visually, in TypeScript end to end: a web UI, an HTTP A
 Requires Node 20+ and pnpm 9 (`corepack enable` provides it).
 
 ```sh
-pnpm install
+pnpm install         # also installs the bundled fonts (15 free families, ~56 MB)
+pnpm fonts           # optional: Liberation + DejaVu into fonts/ (`pnpm fonts --cjk` adds Noto CJK, ~250 MB)
 pnpm dev:server      # API on http://localhost:3001
 pnpm dev:web         # UI on http://localhost:5173 (proxies /api to the server)
 ```
@@ -20,6 +21,7 @@ The container has no global `pnpm`, and the root `dev:*` scripts call `pnpm` aga
 
 ```sh
 corepack pnpm install
+bash scripts/fetch-fonts.sh                    # optional, as `pnpm fonts` (needs github.com reachable)
 (cd apps/server && npx tsx src/main.ts)        # API on :3001
 (cd apps/web && npx vite --host 0.0.0.0)       # UI on :5173
 ```
@@ -32,6 +34,7 @@ On the host, forward the ports once (`PORTS=( 3001 5173 )` in `.devbox.conf`, th
 
 - **Merge files**: in *Merge & Pages*, drop several PDFs, drag pages into order, use a page's hover buttons to rotate it, add a blank page after it, duplicate it or delete it, then *Merge & download*. *Edit result* opens the merged file in the editor.
 - **Fix a typo**: in *Edit*, open a PDF, click a text box, click again to edit in place, press Ctrl+Enter, then *Download* (Ctrl+S). The text keeps its font, size and position.
+- **Pick a font for new text**: with *Add text*, open the font menu. Besides the PDF's own fonts it lists every installed font (font folder, bundled, system), searchable, with a sample and a licence badge. MIT is green, other free licences are grey, ⚠ marks an unknown or non-free licence, and faces whose licence forbids embedding are crossed out.
 - **Add a row to a table**: click a cell, use *+↓* in the toolbar above the table, double-click the new cell and type.
 - **Straighten a scan**: open a tilted scan and click *Straighten all* in the banner.
 
@@ -82,4 +85,4 @@ curl -s http://localhost:3001/api/documents/$ID/download -o a-edited.pdf
 
 ## License note
 
-All dependencies are MIT/Apache/BSD. mupdf (AGPL) is **not** used.
+All code dependencies are MIT/Apache/BSD. mupdf (AGPL) is **not** used. The bundled fonts (`@expo-google-fonts/*`: Tinos, Arimo, Cousine, Carlito, Caladea, Gelasio, Noto Sans/Serif, Inter, Source Sans 3/Serif 4, IBM Plex Sans/Mono, JetBrains Mono, Roboto) are under the SIL Open Font License 1.1, and `pnpm fonts` adds Liberation (OFL) and DejaVu (Bitstream Vera licence). Both licences allow embedding in PDFs.

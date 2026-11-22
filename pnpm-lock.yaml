@@ -35,6 +35,51 @@ importers:
 
   apps/server:
     dependencies:
+      '@expo-google-fonts/arimo':
+        specifier: ^0.4.3
+        version: 0.4.3
+      '@expo-google-fonts/caladea':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/carlito':
+        specifier: ^0.4.1
+        version: 0.4.1
+      '@expo-google-fonts/cousine':
+        specifier: ^0.4.3
+        version: 0.4.3
+      '@expo-google-fonts/gelasio':
+        specifier: ^0.4.1
+        version: 0.4.1
+      '@expo-google-fonts/ibm-plex-mono':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/ibm-plex-sans':
+        specifier: ^0.4.1
+        version: 0.4.1
+      '@expo-google-fonts/inter':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/jetbrains-mono':
+        specifier: ^0.4.1
+        version: 0.4.1
+      '@expo-google-fonts/noto-sans':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/noto-serif':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/roboto':
+        specifier: ^0.4.3
+        version: 0.4.3
+      '@expo-google-fonts/source-sans-3':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/source-serif-4':
+        specifier: ^0.4.2
+        version: 0.4.2
+      '@expo-google-fonts/tinos':
+        specifier: ^0.4.2
+        version: 0.4.2
       '@hono/node-server':
         specifier: ^1.19.5
         version: 1.19.19(hono@4.13.19)
@@ -363,6 +408,51 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@expo-google-fonts/arimo@0.4.3':
+    resolution: {integrity: sha512-kXMUJ303nJgKjJFr8yuiAY9dgIoAoj9HccKkaSw0J63/T4MSdxFejzfDUVLzUz+ohpQWinifV99QOAUQLcGKDg==}
+
+  '@expo-google-fonts/caladea@0.4.2':
+    resolution: {integrity: sha512-b6hpisI+XjFuzRpkBXaEVY27c5j6wnCZFhCyOJUiDWqoRD1jzvICrl0vPZyKrQvR8yQWpsgXxaWOk9hbuH4RRg==}
+
+  '@expo-google-fonts/carlito@0.4.1':
+    resolution: {integrity: sha512-S4vhxWiS1mKp6AAx44VvNt7edQhnoXJU3obKcBZRjMkvQn0MJlm+Sz3O2bhcXy3h01CMi/soREOjDcZYFDzL/Q==}
+
+  '@expo-google-fonts/cousine@0.4.3':
+    resolution: {integrity: sha512-rSl8RXKqxwz8xJvedqdiKtPghSwRAl5c+lMecDyZ1L+V+IQEx6mavMnYkO0KuKgNcHekJXwXZsbmv7zJWggmAw==}
+
+  '@expo-google-fonts/gelasio@0.4.1':
+    resolution: {integrity: sha512-mqSxj6OCIHnyRxqYYd3HSgDyWw9bI+DBWdyQRw9sNrqoceEh+3f43mY6yTrCKrBXqq0a1q9z76IvAp3HKHZQBw==}
+
+  '@expo-google-fonts/ibm-plex-mono@0.4.2':
+    resolution: {integrity: sha512-Dlk7pBVjH13tNo2urBUcYpHnpGayEs8Uz06tKT3Gl+AenXzzbjtyzmx4PWi7HCJHsrIFvMWd79+W78NBbyrNKQ==}
+
+  '@expo-google-fonts/ibm-plex-sans@0.4.1':
+    resolution: {integrity: sha512-allsuhZbvKoKDTB/U8creFVYYzhI97Nw9MgyyNjFzqISNc/sURpA7ZY37Rr+IRI567OV9BWQ/ioUCjAQrVGRbw==}
+
+  '@expo-google-fonts/inter@0.4.2':
+    resolution: {integrity: sha512-syfiImMaDmq7cFi0of+waE2M4uSCyd16zgyWxdPOY7fN2VBmSLKEzkfbZgeOjJq61kSqPBNNtXjggiQiSD6gMQ==}
+
+  '@expo-google-fonts/jetbrains-mono@0.4.1':
+    resolution: {integrity: sha512-CslACrtMOcRwoWXCO7OMEI+9w3fukWSoBtvNz46OqPoogEuuoY0tkDY1O8sFumk8t0pC6Cx0Xr95O0TOQhpkug==}
+
+  '@expo-google-fonts/noto-sans@0.4.2':
+    resolution: {integrity: sha512-zYD8G2ijWLxqmquoQgghNh/x9p0yxWwArD0oxO1oXY1qx5vOd4t0Kbhnu/Cx8RTy08OgA8RtxuULZFaXwVPnPw==}
+
+  '@expo-google-fonts/noto-serif@0.4.2':
+    resolution: {integrity: sha512-1xvAYegrtpCuPPunSyhvhV9FHWEzCWjikEoUJkvHt+WWvt+h7lKr+vkXNpqwFQM4W3KjXOccfLd5s04xLMjjDQ==}
+
+  '@expo-google-fonts/roboto@0.4.3':
+    resolution: {integrity: sha512-kX3wmpmu06fN1yOwYWMdjYJWNUYW6xUiAGeHbvPzzSEb3A3j23JelQ3tAgwQNKgEKRq6wtMmzixy2r7y9c8dsA==}
+
+  '@expo-google-fonts/source-sans-3@0.4.2':
+    resolution: {integrity: sha512-pqnxji7ox1jwLGnX5xSGDpk7C5F6VjyQnBe4NT0xrcBFTW+oxxF4ug6eol3y7ucCk/bYjgg3GFLeKvKbFlHnHA==}
+
+  '@expo-google-fonts/source-serif-4@0.4.2':
+    resolution: {integrity: sha512-7X2w5KT0n/pxRXr5Ogv6W35D004IbCXUouTCr9VCh9bSlSWbryyvk8/ovXNOaJLOJV8QeIDnX0hIppgH0UZ8sA==}
+
+  '@expo-google-fonts/tinos@0.4.2':
+    resolution: {integrity: sha512-MQkfvUO1Aw7UP3jRtWLcjda+udanoL8ecrbkjbc3ZdhSI1iW/Uil4uD8O0eOiIxU2v/FeAT2XjGNiz5oYUlucg==}
 
   '@hono/node-server@1.19.19':
     resolution: {integrity: sha512-Fy9R7PACOzHU9LDpfnuzVyuVYevKQRcEG2mZhmfc+DRdmayEd3RVfa2XOt2IgGcPNgA77Yk63KBszepcMFK5Ng==}
@@ -1447,6 +1537,36 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.2':
     optional: true
+
+  '@expo-google-fonts/arimo@0.4.3': {}
+
+  '@expo-google-fonts/caladea@0.4.2': {}
+
+  '@expo-google-fonts/carlito@0.4.1': {}
+
+  '@expo-google-fonts/cousine@0.4.3': {}
+
+  '@expo-google-fonts/gelasio@0.4.1': {}
+
+  '@expo-google-fonts/ibm-plex-mono@0.4.2': {}
+
+  '@expo-google-fonts/ibm-plex-sans@0.4.1': {}
+
+  '@expo-google-fonts/inter@0.4.2': {}
+
+  '@expo-google-fonts/jetbrains-mono@0.4.1': {}
+
+  '@expo-google-fonts/noto-sans@0.4.2': {}
+
+  '@expo-google-fonts/noto-serif@0.4.2': {}
+
+  '@expo-google-fonts/roboto@0.4.3': {}
+
+  '@expo-google-fonts/source-sans-3@0.4.2': {}
+
+  '@expo-google-fonts/source-serif-4@0.4.2': {}
+
+  '@expo-google-fonts/tinos@0.4.2': {}
 
   '@hono/node-server@1.19.19(hono@4.13.19)':
     dependencies:

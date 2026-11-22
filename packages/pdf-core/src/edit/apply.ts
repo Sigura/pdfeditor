@@ -2,7 +2,7 @@ import pdfLibFontkit from '@pdf-lib/fontkit';
 import { createHash } from 'node:crypto';
 import { PDFArray, PDFDict, PDFName, PDFStream, type PDFDocument, type PDFFont } from 'pdf-lib';
 import { displayOrder, type Color, type EditOperation, type EditResult, type Matrix, type PageModel, type PageOverflow, type Rect, type StrategyReport, type TextBox } from '@pdf-toolkit/shared';
-import { faceCovers, findFallback, findSubstitute, loadFace, parseFontName, type FontRequest, type LoadedFace } from '../fonts/lookup.ts';
+import { faceCovers, faceKey, findFallback, findSubstitute, loadFace, parseFontName, type FontRequest, type LoadedFace } from '../fonts/lookup.ts';
 import type { BoxInternal } from '../model/group.ts';
 import { applyPatch, emptyPatch, serializeOp, type StreamPatch } from '../content/parser.ts';
 import { loadPdf } from '../load.ts';
@@ -72,10 +72,10 @@ class FontEmbedder {
   }
 
   async embed(face: LoadedFace): Promise<PDFFont> {
-    let f = this.fonts.get(face.file);
+    let f = this.fonts.get(faceKey(face));
     if (!f) {
-      f = await this.doc.embedFont(face.bytes, { subset: true });
-      this.fonts.set(face.file, f);
+      f = await this.doc.embedFont(face.bytes, { subset: face.subset });
+      this.fonts.set(faceKey(face), f);
     }
     return f;
   }
@@ -334,7 +334,7 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
         return null;
       }
       if (own) report.warnings.push(`${family} in this file lacks glyphs for: ${[...new Set(encoded.flatMap((e) => e.missing))].join(' ')}`);
-      if (!hit || hit.face.file !== face.file) report.warnings.push(`${family} is not available; used ${face.postscriptName}`);
+      if (!hit || faceKey(hit.face) !== faceKey(face)) report.warnings.push(`${family} is not available; used ${face.postscriptName}`);
       report.strategy = 'substitute';
       report.substituteFont = face.postscriptName;
       report.glyphs.substitute = [...chars].length;

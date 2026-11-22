@@ -691,3 +691,23 @@ test('tilted scan: the banner straightens it, the Table tool then finds the grid
   await expect(page.getByTestId('straighten-detect')).toBeEnabled();
   await expect(page.getByTestId('editor-error')).toHaveCount(0);
 });
+
+test('installed fonts: the picker lists bundled fonts with their licence, and new text uses the picked face', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  await page.getByRole('button', { name: 'Add text' }).click();
+  await page.getByTestId('font-picker').getByTitle('Font for new text').click();
+  const tinos = page.locator('[data-testid="installed-family"][data-family="Tinos"]');
+  await expect(tinos.getByTestId('font-license')).toHaveText('OFL-1.1');
+  await page.getByTestId('font-search').fill('arimo');
+  await expect(page.getByTestId('installed-family')).toHaveCount(1);
+  await page.locator('[data-testid="installed-font"][data-ps="Arimo-Bold"]').click();
+  await expect(page.getByTestId('font-picker').getByTitle('Font for new text')).toContainText('Arimo-Bold');
+
+  const ov = (await page.getByTestId('overlay').boundingBox())!;
+  const added = page.waitForResponse((r) => r.url().endsWith('/edits') && r.request().postDataJSON().ops[0]?.type === 'addTextBox');
+  await page.getByTestId('overlay').click({ position: { x: ov.width * 0.2, y: ov.height * 0.6 } });
+  const res = await added;
+  expect(res.request().postDataJSON().ops[0].fontFamily).toBe('Arimo-Bold');
+  const report = (await res.json()).reports.find((r: { elementId: string }) => r.elementId === res.request().postDataJSON().ops[0].id);
+  expect(report).toMatchObject({ strategy: 'substitute', substituteFont: 'Arimo-Bold' });
+});
