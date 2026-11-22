@@ -10,7 +10,7 @@ import { headerRowsOf, roleStrokes, zebraRows } from '../model/tablePattern.ts';
 import { layoutBox, originalEncoding, type BoxLayout, type LayoutStyle } from './layout.ts';
 import { cellMinSize, tableBounds, type AddedBox, type TableEdit } from './reduce.ts';
 import { imageCropper } from './imageCrop.ts';
-import { rasterTableContent, type RasterGrid, type RasterInput } from './raster.ts';
+import { rasterCellFill, rasterTableContent, type RasterCell, type RasterGrid, type RasterInput } from './raster.ts';
 import { colorOp, num, shiftRect, union } from './ops.ts';
 
 type Overflow = Parameters<typeof layoutBox>[2];
@@ -410,15 +410,16 @@ export function tableDrawer(ctx: TableDrawContext) {
         } else if (fills) addTail(te.pageIndex, fills);
         addTail(te.pageIndex, borders);
       }
+      const nextGrid: RasterGrid = { ys, xs, spans: te.spans, headerRows: te.headerRows };
+      const anchors: RasterCell[] = te.cells.flatMap((row, r) =>
+        row.flatMap((cell, c) => {
+          const s = cellAnchor({ vertices: [], spans: te.spans }, r, c);
+          return s.row === r && s.col === c ? [{ r, c, ...(cell.src && { src: cell.src }), blank: !!cell.edited, ...(cell.background !== undefined && { fill: cell.background }) }] : [];
+        }),
+      );
       if (raster) {
-        const anchors = te.cells.flatMap((row, r) =>
-          row.flatMap((cell, c) => {
-            const s = cellAnchor({ vertices: [], spans: te.spans }, r, c);
-            return s.row === r && s.col === c ? [{ r, c, ...(cell.src && { src: cell.src }), blank: !!cell.edited, ...(cell.background !== undefined && { fill: cell.background }) }] : [];
-          }),
-        );
         const belowShift = tableBounds(te.ys, te.xs).y0 - orig.bbox.y0;
-        addTail(te.pageIndex, rasterTableContent({ ...raster, next: { ys, xs, spans: te.spans, headerRows: te.headerRows }, cells: anchors, belowShift }));
+        addTail(te.pageIndex, rasterTableContent({ ...raster, next: nextGrid, cells: anchors, belowShift }));
       }
       const origCell = (key: string) => orig.cells.find((c) => `${c.row},${c.col}` === key)!;
       const cellRect = (r: number, c: number): Rect => ({ x0: xs[c]!, y0: ys[r + 1]!, x1: xs[c + 1]!, y1: ys[r]! });
@@ -488,13 +489,20 @@ export function tableDrawer(ctx: TableDrawContext) {
           return b && ob ? { ...b, ...shiftRect(b, nb.x0 - ob.x0, nb.y1 - ob.y1) } : null;
         }),
       );
+      // Fills as drawn, indexed by the new grid (covered cells take their anchor's).
+      const rasterFills = look && te.cells.map((row, r) =>
+        row.map((_, c) => {
+          const s = cellAnchor({ vertices: [], spans: te.spans }, r, c);
+          return rasterCellFill(look, anchors, nextGrid, anchors.find((k) => k.r === s.row && k.c === s.col)!);
+        }),
+      );
       page.tables[tIdx] = {
         ...orig,
         bbox: { x0: xs[0]!, y0: ys[ys.length - 1]!, x1: xs[xs.length - 1]!, y1: ys[0]! },
         rows: ys.slice(0, -1).map((y, i) => ({ index: i, y0: ys[i + 1]!, y1: y })),
         cols: xs.slice(0, -1).map((x, i) => ({ index: i, x0: x, x1: xs[i + 1]! })),
         cells: newCells,
-        ...(orig.setup && { setup: { ...orig.setup, vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), spans: te.spans, headerRows: te.headerRows, ...(look && inkBoxes && { raster: { ...look, inkBoxes } }) } }),
+        ...(orig.setup && { setup: { ...orig.setup, vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), spans: te.spans, headerRows: te.headerRows, ...(look && { raster: { ...look, fills: rasterFills!, ...(inkBoxes && { inkBoxes }) } }) } }),
         ...(orig.pattern && { pattern: { ...orig.pattern, zebra: te.zebra } }),
       };
     }

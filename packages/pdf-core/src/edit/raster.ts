@@ -39,6 +39,19 @@ const inset = (r: Rect, d: number): Rect => ({ x0: r.x0 + d, y0: r.y0 + d, x1: r
 const cellRect = (g: RasterGrid, s: CellSpan): Rect => ({ x0: g.xs[s.col]!, y0: g.ys[s.row + s.rowSpan]!, x1: g.xs[s.col + s.colSpan]!, y1: g.ys[s.row]! });
 
 /**
+ * Fill drawn under an anchor cell of the new grid (null = paper): its own fill, else its original
+ * cell's measured fill; inserted cells take the fill of the nearest kept cell of their column on the
+ * same side of the header.
+ */
+export function rasterCellFill(look: RasterLook, cells: RasterCell[], next: RasterGrid, cell: RasterCell): Color | null {
+  if (cell.fill !== undefined) return cell.fill;
+  const header = (r: number) => r < next.headerRows;
+  const peer = cell.src ? undefined : cells.filter((k) => k.src && k.c === cell.c && header(k.r) === header(cell.r)).sort((a, b) => Math.abs(a.r - cell.r) - Math.abs(b.r - cell.r))[0];
+  const s = cell.src ?? peer?.src;
+  return (s && look.fills?.[s.row]?.[s.col]) || null;
+}
+
+/**
  * Redraw of a scanned table after a structural edit, appended at the end of the page: the scan is
  * never resampled. Paper over the old and new area; the scan under the table, shifted; every kept
  * cell as a crop of its original interior at the original size (top-left aligned, clipped to the new
@@ -70,14 +83,10 @@ export function rasterTableContent(o: RasterInput): string {
 
   const om = meshOf(orig);
   const nm = meshOf(next);
-  const fillOf = (s?: { row: number; col: number }) => (s && look.fills?.[s.row]?.[s.col]) || null;
-  const header = (g: RasterGrid, r: number) => r < g.headerRows;
   for (const cell of o.cells) {
     const span = cellAnchor(nm, cell.r, cell.c);
     const nb = cellRect(next, span);
-    // Inserted cells take the fill of the nearest kept cell of their column on the same side of the header.
-    const peer = cell.src ? undefined : o.cells.filter((k) => k.src && k.c === cell.c && header(next, k.r) === header(next, cell.r)).sort((a, b) => Math.abs(a.r - cell.r) - Math.abs(b.r - cell.r))[0];
-    const fill = cell.fill !== undefined ? cell.fill : fillOf(cell.src ?? peer?.src);
+    const fill = rasterCellFill(look, o.cells, next, cell);
     if (fill) out.push(`${fillOp(fill)} ${rectOp(nb)} f`);
     if (!cell.src || cell.blank) continue;
     const ob = cellRect(orig, cellAnchor(om, cell.src.row, cell.src.col));

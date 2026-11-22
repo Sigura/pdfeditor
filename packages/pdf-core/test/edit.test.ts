@@ -688,6 +688,24 @@ describe('scanned tables (scanned-table.pdf)', () => {
     expect(dark, 'right part of the edited cell is paper').toBeLessThan(10);
   });
 
+  it('the model\'s scan fills follow their cells into the new grid (inserted rows as drawn, a set background included)', async () => {
+    const fills = ys.slice(0, -1).map((_, r) => xs.slice(0, -1).map((_, c) => (r === 0 ? grey(212) : r === 2 && c === 1 ? grey(180) : null)));
+    const res = await applyEdits(fixture('scanned-table.pdf'), [
+      { ...define, raster: { ...define.raster, fills } },
+      { type: 'tableInsertRow', tableId: 't-scan', index: 1, position: 'above' },
+      { type: 'setCellText', tableId: 't-scan', row: 4, col: 2, text: 'x', background: grey(100) },
+    ]);
+    const moved = res.pages[0]!.tables[0]!.setup!.raster!.fills!;
+    expect(moved).toHaveLength(6);
+    expect(moved[0]).toEqual(fills[0]);
+    // The inserted row takes the nearest body cell of each column, the original row 1.
+    expect(moved[1]).toEqual(fills[1]);
+    expect(moved[2]).toEqual(fills[1]);
+    expect(moved[3]).toEqual(fills[2]);
+    expect(moved[4]).toEqual([null, null, grey(100), null]);
+    expect(moved[5]).toEqual(fills[4]);
+  });
+
   it('text in an empty (inserted) cell is laid out first: it wraps in the cell at the size estimated from the ink, and its row grows', async () => {
     const original = fixture('scanned-table.pdf');
     const inkBoxes = ys.slice(0, -1).map((_, r) => xs.slice(0, -1).map((x) => ({ x0: x + 4, x1: x + 60, y0: ys[r + 1]! + 8, y1: ys[r + 1]! + 16, line: 8, ascent: 6.6 })));
