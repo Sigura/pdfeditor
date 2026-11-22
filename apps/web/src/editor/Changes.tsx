@@ -8,15 +8,14 @@ export function opTarget(op: EditOperation): string {
   return 'tableId' in op ? op.tableId : op.elementId;
 }
 
-/** Page of an op's element: current models first, then the original ones (deleted elements). */
+/**
+ * Page where an op's element is shown now (text added in a flowed area belongs to an earlier page but
+ * shows on a later one), else the op's page, else the original models (deleted elements).
+ */
 export function opPage(op: EditOperation, pages: PageModel[], origPages: PageModel[]): number | undefined {
-  if ('pageIndex' in op) return op.pageIndex;
   const id = opTarget(op);
-  for (const list of [pages, origPages]) {
-    const p = list.find((pg) => pg.textBoxes.some((b) => b.id === id) || pg.tables.some((t) => t.id === id));
-    if (p) return p.pageIndex;
-  }
-  return undefined;
+  const on = (list: PageModel[]) => list.find((pg) => pg.textBoxes.some((b) => b.id === id) || pg.tables.some((t) => t.id === id))?.pageIndex;
+  return on(pages) ?? ('pageIndex' in op ? op.pageIndex : on(origPages));
 }
 
 const clip = (s: string, n = 28) => {

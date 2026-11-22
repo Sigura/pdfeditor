@@ -451,6 +451,8 @@ test('paging: a cut table asks about its header rows; rows pushed past the last 
   expect(box.bbox.y1).toBeCloseTo(clickY, 0);
   await expect(page.getByTestId('editor-error')).toHaveCount(0);
   await expect(changes(page)).toHaveCount(before + 2);
+  // The change is listed on the page it shows on.
+  await expect(changes(page).last()).toContainText('p3');
 });
 
 test('paging on a scan: the layout is measured in the browser, sent with the change, and the copy page gets the scan bands', async ({ page }) => {
