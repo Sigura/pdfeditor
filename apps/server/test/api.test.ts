@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { createApp } from '../src/app.ts';
 import { sanitizeFileName } from '../src/http.ts';
+import { splitFileArg } from '../src/cli.ts';
 import { makePdf } from '../../../packages/pdf-core/test/helpers.ts';
 
 describe('POST /api/merge', () => {
@@ -46,6 +47,16 @@ describe('sanitizeFileName', () => {
     expect(sanitizeFileName('../../etc/passwd')).toBe('passwd.pdf');
     expect(sanitizeFileName('a"b\r\n.pdf')).toBe('ab.pdf');
     expect(sanitizeFileName('...')).toBe('document.pdf');
+  });
+});
+
+describe('CLI splitFileArg', () => {
+  it('reads ranges and rotation, keeping drive colons in the path', () => {
+    expect(splitFileArg('a.pdf')).toEqual({ path: 'a.pdf' });
+    expect(splitFileArg('a.pdf:1-3,5')).toEqual({ path: 'a.pdf', pages: '1-3,5' });
+    expect(splitFileArg('a.pdf@90')).toEqual({ path: 'a.pdf', rotate: 90 });
+    expect(splitFileArg('C:\\x.pdf:2-@270')).toEqual({ path: 'C:\\x.pdf', pages: '2-', rotate: 270 });
+    expect(splitFileArg('a.pdf@45')).toEqual({ path: 'a.pdf@45' });
   });
 });
 
