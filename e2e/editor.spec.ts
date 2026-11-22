@@ -137,6 +137,7 @@ test('duplicate page: the copy is edited on its own in the editor; Merge repeats
   await thumbs.nth(0).hover();
   await thumbs.nth(0).getByTestId('thumb-duplicate').click();
   await expect.poll(order).toEqual([0, 2, 1]);
+  await expect(changes(page).first()).toHaveText(/Duplicate page 1/);
   await thumbs.nth(1).click();
   await expect(page.getByTestId('page-jump')).toHaveValue('2');
   const box = page.getByTestId('text-box').first();
