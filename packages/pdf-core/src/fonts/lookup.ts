@@ -25,6 +25,8 @@ export type FontFace = {
   italic: boolean;
   serif: boolean;
   mono: boolean;
+  /** cmap coverage as sorted [first, last] code point pairs, so fallback search needn't load faces. */
+  coverage: Uint32Array;
 };
 
 export type LoadedFace = FontFace & { bytes: Uint8Array; font: fontkit.Font };
@@ -186,6 +188,16 @@ type Os2 = {
   fsType?: { noEmbedding?: boolean; noSubsetting?: boolean; bitmapOnly?: boolean };
 };
 
+function codeRanges(codePoints: number[]): Uint32Array {
+  const cps = [...new Set(codePoints)].sort((a, b) => a - b);
+  const out: number[] = [];
+  for (const cp of cps) {
+    if (out.length && out[out.length - 1] === cp - 1) out[out.length - 1] = cp;
+    else out.push(cp, cp);
+  }
+  return Uint32Array.from(out);
+}
+
 function describe(f: fontkit.Font, file: string, source: FontFace['source'], face?: number): FontFace {
   const os2 = (f as unknown as { 'OS/2'?: Os2 })['OS/2'];
   const sub = f.subfamilyName ?? '';
@@ -203,6 +215,7 @@ function describe(f: fontkit.Font, file: string, source: FontFace['source'], fac
     bold: (os2?.usWeightClass ?? 400) >= 600 || !!os2?.fsSelection?.bold || /bold|black|heavy/i.test(sub),
     italic: !!os2?.fsSelection?.italic || f.italicAngle !== 0 || /italic|oblique/i.test(sub),
     ...classify(f),
+    coverage: codeRanges(f.characterSet),
   };
 }
 
@@ -280,6 +293,21 @@ export function faceCovers(face: LoadedFace, text: string): boolean {
   return [...text].every((ch) => ch === '\n' || face.font.hasGlyphForCodePoint(ch.codePointAt(0)!));
 }
 
+function rangesHave(ranges: Uint32Array, cp: number): boolean {
+  let lo = 0;
+  let hi = ranges.length / 2 - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (cp < ranges[2 * mid]!) hi = mid - 1;
+    else if (cp > ranges[2 * mid + 1]!) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+/** Number of faces currently held in memory by loadFace. */
+export const loadedFaceCount = (): number => loadedCache.size;
+
 /**
  * S2 lookup: PostScript name, then family + style, then a metric-compatible family with the same
  * style. Only these count as substitutes; anything looser is an S3 fallback.
@@ -312,9 +340,7 @@ export function findFallback(req: FontRequest, text: string): LoadedFace | undef
     (f.italic === req.italic ? 2 : 0) +
     (group?.includes(normalizeFamily(f.family)) ? 1 : 0);
   const ranked = fontIndex().faces.filter((f) => f.embeddable).sort((a, b) => score(b) - score(a) || a.file.localeCompare(b.file));
-  for (const f of ranked) {
-    const l = loadFace(f);
-    if (faceCovers(l, text)) return l;
-  }
-  return undefined;
+  const cps = [...new Set([...text].filter((ch) => ch !== '\n').map((ch) => ch.codePointAt(0)!))];
+  const hit = ranked.find((f) => cps.every((cp) => rangesHave(f.coverage, cp)));
+  return hit && loadFace(hit);
 }

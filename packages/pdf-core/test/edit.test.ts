@@ -7,7 +7,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { applyEdits } from '../src/edit/apply.ts';
 import { arrangePdf } from '../src/merge.ts';
 import { planFlow, type FlowPage } from '../src/edit/paging.ts';
-import { configureFonts, fontIndex } from '../src/fonts/lookup.ts';
+import { configureFonts, findFallback, fontIndex, loadedFaceCount } from '../src/fonts/lookup.ts';
 import { loadPdf } from '../src/load.ts';
 import { analyzeDocument, pageContentBytes } from '../src/model/extract.ts';
 import { PDFDict, PDFDocument, PDFName, PDFNumber, PDFRef, PDFStream } from 'pdf-lib';
@@ -151,6 +151,17 @@ describe('S3 emulated glyphs', () => {
     expect(at(after, 'Serif').x).toBeCloseTo(at(before, 'Serif').x, 3);
     const serifSpace = ((556 + 444 + 333 + 278 + 333 + 250) / 1000) * 16; // Times AFM widths at 16 pt
     expect(at(after, 'ş').x).toBeCloseTo(at(before, 'Serif').x + serifSpace, 2);
+  });
+
+  it('picks a fallback face from the indexed coverage and loads only that face', () => {
+    const req = { name: 'Unknown-Font', bold: false, italic: false, serif: false, mono: false };
+    expect(fontIndex().faces.length).toBeGreaterThan(1);
+    expect(findFallback(req, '漢字')).toBeUndefined();
+    expect(loadedFaceCount()).toBe(0);
+    const face = findFallback(req, 'Ж');
+    expect(face?.font.hasGlyphForCodePoint('Ж'.codePointAt(0)!)).toBe(true);
+    expect(face?.serif).toBe(false);
+    expect(loadedFaceCount()).toBe(1);
   });
 });
 
