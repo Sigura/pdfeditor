@@ -71,6 +71,7 @@ Discriminated union on `type`, validated with zod:
 | `setTextStyle`   | `elementId` (box), `color?`, `align?`, `lineSpacing?` (× font size), `background?`. Merged per box; layout keeps the box's font and in-line glyph offsets |
 | `setPageFlow`    | `newPages: 'copy'\|'empty'`: how content continues past the last page (last one wins) |
 | `arrangePages`   | `order` ([{`page`, `rotate?`}], edit indices in output order; left out = deleted), `blanks` ([{`width`, `height`}], appended to the edit document after the original pages, so they are editable). Last one wins. The flow follows `order`; pages it adds come after the blanks and are output last. Applied on download only (`arrangePdf`, so /Info, XMP and outlines stay); the preview and models keep edit indices and the editor maps display order to them |
+| `deskewPage`     | `pageIndex`, `angle` (degrees, counter-clockwise, ±15), `paper`: straightens a tilted scan. Last one per page wins. Applied before analysis (`edit/deskew.ts`): the page content becomes one stream that fills the media box with `paper` and draws the old content rotated about the crop box centre, so the scan is placed rotated, never resampled. Every other op on the page is in straightened coordinates, which is what `/pdf?original=1` serves (`?original=raw` = the upload). The editor detects the angle on the upload (`rasterGrid.ts detectSkew`: projection profile of the ink over ±15°, 0.05° steps), offers "Straighten all" for tilts ≥ 0.3°, and only straightens pages without other edits; a straightened page's `scanLayout` is dropped and measured again |
 | `scanLayout`     | `pageIndex`, `lines` (ink y ranges, original coordinates), `paper`: measured layout of a scanned page for the page flow |
 
 The server keeps the original bytes plus the **full ordered list** of operations for a document.
@@ -169,7 +170,7 @@ tables right below a table whose bottom edge changed; paths and images there get
   Past the last page the response has `overflows` with `needsPage`, and the editor asks Copy header/footer /
   Empty page (same size) / Cancel. The choice is the op `setPageFlow`. A copy page draws the last page's
   header and footer bands (scan crops on paper for scanned pages). Scanned pages the flow reaches need a
-  `scanLayout` (`needsLayout`). The editor measures it on the original PDF (`/pdf?original=1`, ink rows
+  `scanLayout` (`needsLayout`). The editor measures it on the original PDF, straightened (`/pdf?original=1`, ink rows
   between the paper median and the 1st-percentile ink) and sends it with the same change. Page models
   after the flow show moved boxes and table rows on the pages that draw them, under their ids, and a table
   cut by the flow appears on both pages. `flowIn` marks continued areas, and `added` marks pages created by

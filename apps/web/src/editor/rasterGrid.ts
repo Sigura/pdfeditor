@@ -4,7 +4,7 @@ export type Pixels = { data: Uint8ClampedArray; width: number; height: number };
 /** Pixel grid of a rendered page region: `toPage` maps a pixel centre to page coordinates. */
 export type Region = { img: Pixels; toPage: (x: number, y: number) => [number, number] };
 
-const lum = (d: Uint8ClampedArray, i: number) => 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
+export const lum = (d: Uint8ClampedArray, i: number) => 0.299 * d[i]! + 0.587 * d[i + 1]! + 0.114 * d[i + 2]!;
 
 /** Otsu threshold of the region's luminance: ink below, paper and light fills above. */
 function otsu(img: Pixels): number {
@@ -180,12 +180,8 @@ export function measureLook(region: Region, toPx: (r: Rect) => Rect, cells: (Rec
   return { paper, ...(ink && { ink }), fills, inkBoxes };
 }
 
-/**
- * Ink rows of a scanned page (outside nothing: the server skips rows inside tables): runs of pixel rows
- * with ink, joined across gaps under 1 pt, in page coordinates, top first; plus the paper colour.
- */
-export function scanLayout(region: Region, pxPerPt: number): { lines: { y0: number; y1: number }[]; paper: Color } | null {
-  const { img } = region;
+/** Luminance below which a scanned page's pixel is ink; null when the page has no clear ink. */
+export function pageInkThreshold(img: Pixels): number | null {
   // A page is mostly paper, which skews Otsu towards the darkest ink; halfway between paper (median) and ink (1st percentile) instead.
   const hist = new Array<number>(256).fill(0);
   for (let i = 0; i < img.data.length; i += 4) hist[Math.round(lum(img.data, i))]!++;
@@ -194,8 +190,59 @@ export function scanLayout(region: Region, pxPerPt: number): { lines: { y0: numb
     return hist.findIndex((n) => (acc += n) >= q * img.width * img.height);
   };
   const [ink, paperLum] = [quantile(0.01), quantile(0.5)];
-  if (paperLum - ink < 40) return { lines: [], paper: dominant(img, () => true)! };
-  const t = (ink + paperLum) / 2;
+  return paperLum - ink < 40 ? null : (ink + paperLum) / 2;
+}
+
+/**
+ * The rotation in degrees (counter-clockwise as seen, as deskewPage takes it) that makes a scanned page's
+ * ink rows level: the angle whose projection profile is sharpest (largest sum of squared row counts),
+ * searched over ±15°. null when the page has no clear ink.
+ */
+export function detectSkew(img: Pixels): number | null {
+  const t = pageInkThreshold(img);
+  if (t === null) return null;
+  const { width: w, height: h, data } = img;
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) if (lum(data, i) < t) total++;
+  if (total < 100) return null;
+  const step = Math.max(1, Math.ceil(total / 200_000));
+  const xs: number[] = [];
+  const ys: number[] = [];
+  let k = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lum(data, (y * w + x) * 4) < t && k++ % step === 0) xs.push(x), ys.push(y);
+  const bins = new Int32Array(w + h + 2);
+  // Pixel rows run down, so a row tilted by `a` as seen (counter-clockwise) is level in y·cos a + x·sin a.
+  const score = (deg: number) => {
+    const a = (deg * Math.PI) / 180;
+    const [c, s] = [Math.cos(a), Math.sin(a)];
+    bins.fill(0);
+    for (let i = 0; i < xs.length; i++) bins[Math.round(ys[i]! * c + xs[i]! * s) + w]!++;
+    let sum = 0;
+    for (const n of bins) sum += n * n;
+    return sum;
+  };
+  const best = (from: number, to: number, by: number) => {
+    let arg = 0;
+    let max = -1;
+    for (let d = from; d <= to + 1e-9; d += by) {
+      const v = score(d);
+      if (v > max) [max, arg] = [v, d];
+    }
+    return arg;
+  };
+  const coarse = best(-15, 15, 0.5);
+  const tilt = best(coarse - 0.5, coarse + 0.5, 0.05);
+  return Math.round(-tilt * 100) / 100 || 0;
+}
+
+/**
+ * Ink rows of a scanned page (outside nothing: the server skips rows inside tables): runs of pixel rows
+ * with ink, joined across gaps under 1 pt, in page coordinates, top first; plus the paper colour.
+ */
+export function scanLayout(region: Region, pxPerPt: number): { lines: { y0: number; y1: number }[]; paper: Color } | null {
+  const { img } = region;
+  const t = pageInkThreshold(img);
+  if (t === null) return { lines: [], paper: dominant(img, () => true)! };
   const minInk = Math.max(3, img.width * 0.002);
   const inked = Array.from({ length: img.height }, (_, y) => {
     let n = 0;

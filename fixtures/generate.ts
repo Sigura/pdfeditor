@@ -171,6 +171,32 @@ async function scannedTable() {
   rpage.node.setXObject(PDFName.of('Im1'), rimg);
   rpage.node.set(PDFName.of('Contents'), rot.context.register(rot.context.flateStream(`q 0 -${ph} ${pw} 0 0 ${ph} cm /Im1 Do Q`)));
   await save('scanned-table-rotated.pdf', rot);
+
+  // The same page scanned 1.5° counter-clockwise (bilinear, paper outside), so straightening it takes −1.5°.
+  const sk = await PDFDocument.create();
+  const tilt = (1.5 * Math.PI) / 180;
+  const [tc, ts] = [Math.cos(tilt), Math.sin(tilt)];
+  const tilted = new Uint8Array(w * h);
+  const at = (x: number, y: number) => (x >= 0 && y >= 0 && x < w && y < h ? px[y * w + x]! : 248);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Pixel rows go down, so a visual counter-clockwise turn samples the source at +tilt.
+      const dx = x - w / 2;
+      const dy = y - h / 2;
+      const sx = tc * dx - ts * dy + w / 2;
+      const sy = ts * dx + tc * dy + h / 2;
+      const [x0, y0] = [Math.floor(sx), Math.floor(sy)];
+      const [fx, fy] = [sx - x0, sy - y0];
+      const top = at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx;
+      const bottom = at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx;
+      tilted[y * w + x] = Math.round(top * (1 - fy) + bottom * fy);
+    }
+  }
+  const simg = sk.context.register(sk.context.flateStream(tilted, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+  const spage = sk.addPage([pw, ph]);
+  spage.node.setXObject(PDFName.of('Im1'), simg);
+  spage.node.set(PDFName.of('Contents'), sk.context.register(sk.context.flateStream(`q ${pw} 0 0 ${ph} 0 0 cm /Im1 Do Q`)));
+  await save('scanned-table-skewed.pdf', sk);
 }
 
 async function table() {

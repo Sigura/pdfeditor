@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { analyzePdf, applyEdits, arrangePdf, mergePdfs, type BlankPage, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
+import { analyzePdf, applyEdits, arrangePdf, deskewPdf, mergePdfs, type BlankPage, type MergeInput, type PdfAnalysis } from '@pdf-toolkit/pdf-core';
 import { EditBatchSchema, displayOrder, MergeRangesSchema, MergeSegmentsSchema, type DocumentInfo, type EditResult } from '@pdf-toolkit/shared';
 import { config } from './config.ts';
 import { HttpError, contentDisposition, errorResponse, readPdfFile } from './http.ts';
@@ -151,10 +151,11 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     return c.json(page);
   });
 
-  // Current revision for in-browser rendering (?original=1: the uploaded file, for measurements in original coordinates).
-  const sendCurrent = async (id: string, attachment: boolean, original = false) => {
+  // Current revision for in-browser rendering. ?original=1: the uploaded file with only its deskewPage ops, for
+  // measurements in the coordinates ops use; ?original=raw: the uploaded file as is.
+  const sendCurrent = async (id: string, attachment: boolean, original: false | '1' | 'raw' = false) => {
     const meta = await store.meta(id);
-    let bytes: Uint8Array = original ? await store.original(id) : await store.current(id);
+    let bytes: Uint8Array = !original ? await store.current(id) : original === 'raw' ? await store.original(id) : await deskewPdf(await store.original(id), meta.ops);
     const arrange = original ? undefined : meta.ops.findLast((op) => op.type === 'arrangePages');
     if (attachment && arrange) {
       const pages = (await analysisOf(id)).pages;
@@ -166,7 +167,10 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     if (attachment) headers['Content-Disposition'] = contentDisposition(meta.fileName.replace(/\.pdf$/i, '') + (meta.revision ? '-edited.pdf' : '.pdf'));
     return new Response(new Uint8Array(bytes), { status: 200, headers });
   };
-  app.get('/api/documents/:id/pdf', (c) => sendCurrent(c.req.param('id'), false, c.req.query('original') === '1'));
+  app.get('/api/documents/:id/pdf', (c) => {
+    const original = c.req.query('original');
+    return sendCurrent(c.req.param('id'), false, original === '1' || original === 'raw' ? original : false);
+  });
   app.get('/api/documents/:id/download', (c) => sendCurrent(c.req.param('id'), true));
 
   return { app, store };

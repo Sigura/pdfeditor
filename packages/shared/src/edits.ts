@@ -109,6 +109,20 @@ export const ScanLayoutOp = z.object({
 });
 
 /**
+ * Straightens a tilted scanned page: its content is drawn rotated by `angle` degrees (counter-clockwise in
+ * PDF user space) about the crop box centre, over a `paper` fill of the media box, so the corners the
+ * rotation uncovers match the scan. The last one per page wins. Applied before analysis, so every other op
+ * on that page is in straightened coordinates.
+ */
+export const DeskewPageOp = z.object({
+  type: z.literal('deskewPage'),
+  pageIndex: z.number().int().min(0),
+  angle: finite.min(-15).max(15),
+  paper: ColorSchema,
+});
+export type DeskewPage = z.infer<typeof DeskewPageOp>;
+
+/**
  * Page arrangement of the output (the last one wins). `order` lists edit page indices in output order;
  * a page left out is deleted. `blanks` are appended to the edit document as pages base…base+B−1
  * (base = the original page count), so they can be edited. Pages added by the flow come after them
@@ -149,6 +163,7 @@ export const EditOperationSchema = z.discriminatedUnion('type', [
   ScanLayoutOp,
   TableContinuationOp,
   ArrangePagesOp,
+  DeskewPageOp,
 ]);
 export type EditOperation = z.infer<typeof EditOperationSchema>;
 

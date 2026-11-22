@@ -10,6 +10,7 @@ import { analyzeDocument, type PageAnalysis } from '../model/extract.ts';
 import type { ImageItem, PathItem, RunInternal, StreamInfo } from '../model/interpreter.ts';
 import { snapshotObjects, writeIncremental } from '../save/incremental.ts';
 import { encodeForFont, type EncodedItem } from './coverage.ts';
+import { applyDeskews } from './deskew.ts';
 import { Emulator, fontRequest } from './emulate.ts';
 import { layoutBox, originalEncoding, type BoxEncoding, type BoxLayout, type LayoutStyle } from './layout.ts';
 import { tableDefinitions, reduceEdits, reflowBelow, type AddedBox } from './reduce.ts';
@@ -221,6 +222,7 @@ function familyRequest(family: string): FontRequest {
 export async function applyEdits(original: Uint8Array, ops: EditOperation[], opts: { force?: ForceStrategy } = {}): Promise<ApplyResult> {
   const { doc, decrypted } = await loadPdf(original);
   const snapshot = decrypted ? null : snapshotObjects(doc.context);
+  applyDeskews(doc, ops);
   const arrange = ops.findLast((op) => op.type === 'arrangePages');
   for (const b of arrange?.blanks ?? []) {
     const page = doc.addPage([b.width, b.height]);

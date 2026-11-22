@@ -57,6 +57,10 @@ export const pageNo = (s: { ops: EditOperation[]; pages: PageModel[] }, k: numbe
 
 export type Nudge = { id: string; dx: number; dy: number };
 
+/** A page's scanLayout is measured on the straightened page, so it goes when the page's deskew changes. */
+const withoutStaleLayouts = (ops: EditOperation[], pageIndexes: number[]) => ops.filter((o) => o.type !== 'scanLayout' || !pageIndexes.includes(o.pageIndex));
+const deskewedPages = (ops: EditOperation[]) => ops.flatMap((o) => (o.type === 'deskewPage' ? [o.pageIndex] : []));
+
 export type EditorState = {
   docId: string | null;
   fileName: string;
@@ -118,6 +122,8 @@ export type EditorState = {
   edit: (ops: EditOperation[], then?: () => void) => Promise<void>;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
+  /** Appends deskewPage ops (the last one per page wins; angle 0 straightens nothing). */
+  deskew: (ops: Extract<EditOperation, { type: 'deskewPage' }>[]) => Promise<void>;
   /** Undoes one op anywhere in the list (later ops that depend on it make the server reject the change). */
   removeOp: (index: number) => Promise<void>;
   /** Moves the selected box by (dx, dy); consecutive nudges are sent as one moveElement. */
@@ -297,6 +303,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ prompt: null });
     await send(get, () => get().ops.slice(0, -count), 'replace');
   },
+  deskew: async (list) => {
+    if (await send(get, () => [...withoutStaleLayouts(get().ops, list.map((o) => o.pageIndex)), ...list], 'replace')) set({ redoStack: [] });
+  },
   undo: async () => {
     clearTimeout(nudgeTimer);
     set({ nudge: null });
@@ -308,7 +317,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       const i = ops.findLastIndex((o) => o.type !== 'scanLayout');
       if (i < 0) return null;
       undone = [ops[i]!];
-      return ops.filter((_, k) => k !== i);
+      return withoutStaleLayouts(ops.filter((_, k) => k !== i), deskewedPages(undone));
     }, 'replace');
     if (ok) set((s) => ({ redoStack: [...s.redoStack, undone] }));
   },
@@ -327,7 +336,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     const keep = () => {
       const cur = get().ops;
       const i = cur === ops ? index : cur.findIndex((o) => JSON.stringify(o) === target);
-      return i < 0 ? null : cur.filter((_, k) => k !== i);
+      return i < 0 ? null : withoutStaleLayouts(cur.filter((_, k) => k !== i), deskewedPages([cur[i]!]));
     };
     if (await send(get, keep, 'replace')) set({ redoStack: [] });
     else set((st) => ({ error: `Change ${index + 1} can't be undone on its own (a later change depends on it): ${st.error}` }));
