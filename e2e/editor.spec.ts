@@ -387,3 +387,67 @@ test('ink measurement on real glyphs: the font size estimate is right with and w
   expect(Object.keys(boxes).sort()).toEqual(['Apples', 'Item', 'Qty', 'Total']);
   for (const b of Object.values(boxes)) expect(Math.abs(inkFontSize(b) - 11)).toBeLessThanOrEqual(0.55);
 });
+
+test('paging: rows pushed past the last page ask how to continue; Copy header/footer adds a page; slow requests show progress', async ({ page }) => {
+  await open(page, 'paged-table.pdf');
+  const thumbs = page.locator('img[alt^="Page "]');
+  await expect(thumbs).toHaveCount(2);
+  const cells = page.getByTestId('table-cell');
+  await cells.nth(12).click();
+  // Rows first flow onto page 2 without asking; the prompt comes once page 2 runs out too.
+  for (let i = 0; i < 40 && !(await page.getByTestId('prompt').count()); i++) {
+    const n = await changes(page).count();
+    await page.getByTitle('Insert row below').click();
+    await expect(changes(page)).toHaveCount(n + 1);
+  }
+  await expect(page.getByTestId('prompt')).toContainText('past the bottom of the last page (2)');
+  const before = await changes(page).count();
+  await page.route('**/api/documents/*/edits', async (route) => {
+    await new Promise((r) => setTimeout(r, 2000));
+    await route.continue();
+  });
+  await page.getByTestId('prompt-copy').click();
+  await expect(page.getByTestId('progress')).toContainText('Applying changes…');
+  await expect(thumbs).toHaveCount(3);
+  await expect(page.getByTestId('progress')).toHaveCount(0);
+  await expect(changes(page)).toHaveCount(before + 1);
+  await page.unroute('**/api/documents/*/edits');
+
+  // The added page: content continued from page 2, marked, and no new text can be placed there.
+  await thumbs.nth(2).click();
+  await expect(page.getByTestId('flow-in')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Add text' }).click();
+  await page.getByTestId('overlay').click({ position: { x: 300, y: 300 } });
+  await expect(page.getByTestId('editor-error')).toContainText('continued from an earlier page');
+  await expect(changes(page)).toHaveCount(before + 1);
+});
+
+test('paging on a scan: the layout is measured in the browser, sent with the change, and the copy page gets the scan bands', async ({ page }) => {
+  await open(page, 'paged-scan.pdf');
+  const ov = (await page.getByTestId('overlay').boundingBox())!;
+  const at = (x: number, y: number) => [ov.x + (x / 595) * ov.width, ov.y + ((842 - y) / 842) * ov.height] as const;
+  await page.getByTestId('tools').getByRole('button', { name: 'Table', exact: true }).click();
+  await page.mouse.move(...at(50, 240));
+  await page.mouse.down();
+  await page.mouse.move(...at(545, 124), { steps: 5 });
+  await page.mouse.up();
+  await page.getByTestId('setup-ok').click();
+  await page.getByTestId('setup-confirm').click();
+  await expect(changes(page)).toHaveCount(1);
+  await page.getByTestId('tools').getByRole('button', { name: 'Select', exact: true }).click();
+  const layout = page.waitForRequest((r) => r.url().endsWith('/edits') && r.postDataJSON().ops[0]?.type === 'scanLayout');
+  await page.getByTestId('table-cell').nth(12).click();
+  await page.getByTitle('Insert row below').click();
+  const op = (await layout).postDataJSON().ops[0];
+  // Fixture (generate.ts pagedScan): header bar 798–808, footer bar 28–38, 16 text bars from 740 down, the line under the table at 100–108.
+  const near = (y0: number, y1: number) => op.lines.some((l: { y0: number; y1: number }) => Math.abs(l.y0 - y0) < 1 && Math.abs(l.y1 - y1) < 1);
+  expect(near(798, 808) && near(28, 38) && near(740, 748) && near(100, 108)).toBe(true);
+  await expect(changes(page)).toHaveCount(3);
+  for (let i = 0; i < 12 && !(await page.getByTestId('prompt').count()); i++) {
+    const n = await changes(page).count();
+    await page.getByTitle('Insert row below').click();
+    await expect(changes(page)).toHaveCount(n + 1);
+  }
+  await page.getByTestId('prompt-copy').click();
+  await expect(page.locator('img[alt^="Page "]')).toHaveCount(2);
+});

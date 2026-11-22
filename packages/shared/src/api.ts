@@ -19,7 +19,16 @@ export const DocumentInfoSchema = z.object({
 });
 export type DocumentInfo = z.infer<typeof DocumentInfoSchema>;
 
-export const PageOverflowSchema = z.object({ pageIndex: z.number().int(), by: z.number() });
+/**
+ * `needsPage`: the content runs past the last page and no setPageFlow op says how to add pages.
+ * `needsLayout`: scanned pages the flow reaches that have no scanLayout op yet.
+ */
+export const PageOverflowSchema = z.object({
+  pageIndex: z.number().int(),
+  by: z.number(),
+  needsPage: z.boolean().optional(),
+  needsLayout: z.array(z.number().int()).optional(),
+});
 export type PageOverflow = z.infer<typeof PageOverflowSchema>;
 
 export const EditResultSchema = z.object({

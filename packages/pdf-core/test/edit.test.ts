@@ -730,3 +730,109 @@ describe('scanned tables (scanned-table.pdf)', () => {
     await expect(applyEdits(original, [full, insert])).rejects.toThrow(/other columns can't shrink enough/);
   });
 });
+
+/** Text items of every page (pdf.js), as `str@baseline` per page. */
+async function pageTexts(bytes: Uint8Array) {
+  const doc = await getDocument({ data: new Uint8Array(bytes), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  const pages: { str: string; y: number }[][] = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const content = await (await doc.getPage(i)).getTextContent();
+    pages.push(content.items.flatMap((x) => ('str' in x && x.str.trim() ? [{ str: x.str, y: Math.round((x.transform[5] as number) * 100) / 100 }] : [])));
+  }
+  await doc.destroy();
+  return pages;
+}
+
+describe('table paging (paged-table.pdf)', () => {
+  const body = (n: number) => `Body paragraph line ${n} of the page.`;
+  const under = 'Line under the table.';
+  const setup = async () => {
+    const original = fixture('paged-table.pdf');
+    const t = analyzeDocument((await loadPdf(original)).doc)[0]!.model.tables[0]!;
+    return { original, t };
+  };
+
+  it('pushed content continues at the top of the next page, whose body moves down; header and footer stay; no text is duplicated', async () => {
+    const { original, t } = await setup();
+    const long = Array.from({ length: 9 }, (_, i) => `Long cell line ${i + 1}`).join(' ');
+    const res = await applyEdits(original, [{ type: 'setCellText', tableId: t.id, row: 2, col: 0, text: long }]);
+    expect(res.overflows).toEqual([]);
+    const [before, after] = await Promise.all([pageTexts(original), pageTexts(res.bytes)]);
+    const at = (p: { str: string; y: number }[], s: string) => p.filter((x) => x.str === s).map((x) => x.y);
+    // Each string once per page: clipped-away copies are removed from the text layer.
+    for (const p of after) expect(new Set(p.map((x) => `${x.str}@${x.y}`)).size).toBe(p.length);
+    expect(at(after[0]!, under)).toEqual([]);
+    expect(at(after[1]!, under)).toEqual([at(before[1]!, body(1))[0]]);
+    for (const page of [0, 1]) {
+      expect(at(after[page]!, 'Quarterly report')).toEqual(at(before[page]!, 'Quarterly report'));
+      expect(at(after[page]!, `Page ${page + 1}`)).toEqual(at(before[page]!, `Page ${page + 1}`));
+    }
+    const shift = at(before[1]!, body(1))[0]! - at(after[1]!, body(1))[0]!;
+    expect(shift).toBeGreaterThan(12);
+    for (let n = 1; n <= 8; n++) expect(at(after[1]!, body(n))[0]).toBeCloseTo(at(before[1]!, body(n))[0]! - shift, 2);
+    // The model keeps the moved box's id, on the page that shows it.
+    const box = res.pages[1]!.textBoxes.find((b) => b.text === under)!;
+    expect(box.id).toBe(analyzeDocument((await loadPdf(original)).doc)[0]!.model.textBoxes.find((b) => b.text === under)!.id);
+    expect(res.pages[1]!.flowIn).toHaveLength(1);
+  });
+
+  it('past the last page: needsPage until the user picks; copy repeats the header/footer bands, empty does not; the table is split under one id; save → reopen', async () => {
+    const { original, t } = await setup();
+    const rows = Array.from({ length: 30 }, () => ({ type: 'tableInsertRow' as const, tableId: t.id, index: 3, position: 'below' as const }));
+    const ask = await applyEdits(original, rows);
+    expect(ask.pages).toHaveLength(2);
+    expect(ask.overflows).toMatchObject([{ pageIndex: 1, needsPage: true }]);
+
+    const copy = await applyEdits(original, [...rows, { type: 'setPageFlow', newPages: 'copy' }]);
+    expect(copy.overflows).toEqual([]);
+    expect(copy.pages).toHaveLength(3);
+    const parts = copy.pages.map((p) => p.tables.filter((x) => x.id === t.id));
+    expect(parts[0]).toHaveLength(1);
+    expect(parts[1]).toHaveLength(1);
+    expect(parts[0]![0]!.rows.length + parts[1]![0]!.rows.length).toBe(t.rows.length + 30);
+    expect(copy.pages[2]!.added).toBe(true);
+    const [before, after] = await Promise.all([pageTexts(original), pageTexts(copy.bytes)]);
+    const page3 = after[2]!;
+    for (const s of ['Quarterly report', 'Page 2']) expect(page3.filter((x) => x.str === s).map((x) => x.y)).toEqual(before[1]!.filter((x) => x.str === s).map((x) => x.y));
+    // The new page's body starts where the last page's did.
+    expect(page3.find((x) => x.str === body(1))!.y).toBeCloseTo(before[1]!.find((x) => x.str === body(1))!.y, 2);
+
+    const empty = await applyEdits(original, [...rows, { type: 'setPageFlow', newPages: 'empty' }]);
+    const e3 = (await pageTexts(empty.bytes))[2]!;
+    expect(e3.some((x) => x.str === 'Quarterly report' || x.str === 'Page 2')).toBe(false);
+    expect(e3.filter((x) => x.str.startsWith('Body paragraph'))).toHaveLength(8);
+
+    // Incremental: the original is a prefix, the new page is in the page tree, and the result reopens.
+    expect(Buffer.from(copy.bytes.subarray(0, original.length)).equals(Buffer.from(original))).toBe(true);
+    const reopened = analyzeDocument((await loadPdf(copy.bytes)).doc);
+    expect(reopened).toHaveLength(3);
+    expect(reopened[2]!.model.textBoxes.map((b) => b.text).join('\n')).toContain(body(8));
+  });
+
+  it('scanned page: asks for a measured layout, then copies the scan bands as crops onto paper', async () => {
+    const original = fixture('paged-scan.pdf');
+    const xs = [60, 220, 340, 460, 535];
+    const ys = [230, 206, 182, 158, 134];
+    const grey = (v: number) => ({ space: 'gray' as const, values: [v / 255] });
+    const define = { type: 'defineTable' as const, tableId: 't-scan', pageIndex: 0, spans: [], vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), borderWidth: 1.5, headerRows: 1, origin: 'raster' as const, raster: { paper: grey(246), ink: grey(50) } };
+    const rows = Array.from({ length: 6 }, () => ({ type: 'tableInsertRow' as const, tableId: 't-scan', index: 3, position: 'below' as const }));
+    expect((await applyEdits(original, [define, ...rows])).overflows).toEqual([{ pageIndex: 0, by: 0, needsLayout: [0] }]);
+    const lines = [{ y0: 798, y1: 808 }, ...Array.from({ length: 16 }, (_, i) => ({ y0: 740 - i * 16, y1: 748 - i * 16 })), { y0: 100, y1: 108 }, { y0: 28, y1: 38 }];
+    const layout = { type: 'scanLayout' as const, pageIndex: 0, lines, paper: grey(246) };
+    expect((await applyEdits(original, [define, ...rows, layout])).overflows).toMatchObject([{ pageIndex: 0, needsPage: true }]);
+    const res = await applyEdits(original, [define, ...rows, layout, { type: 'setPageFlow', newPages: 'copy' }]);
+    expect(res.pages).toHaveLength(2);
+    const [p0, p1] = res.pages.map((p) => p.tables.find((x) => x.id === 't-scan')!);
+    expect(p0!.rows.length + p1!.rows.length).toBe(4 + 6);
+    // Continued rows start at the top of the body (the first ink line of the scan's body).
+    expect(p1!.bbox.y1).toBeCloseTo(748, 0);
+    const { doc } = await loadPdf(res.bytes);
+    const content = new TextDecoder().decode(pageContentBytes(doc.getPage(1)));
+    const clips = [...content.matchAll(/q ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) re W n 1 0 0 1 0 ([-\d.]+) cm \/\w+ Do Q/g)].map((m) => ({ y0: Number(m[2]), y1: Number(m[2]) + Number(m[4]) }));
+    // Paper first, then the continued body under the header, and the header and footer bands at their original places.
+    expect(content.startsWith(`q ${(246 / 255).toPrecision(12)} g 0 0 595 842 re f Q`)).toBe(true);
+    expect(clips).toContainEqual({ y0: 797, y1: 809 });
+    expect(clips).toContainEqual({ y0: 27, y1: 39 });
+    expect(clips.some((c) => c.y1 > 740 && c.y1 < 790)).toBe(true);
+  });
+});

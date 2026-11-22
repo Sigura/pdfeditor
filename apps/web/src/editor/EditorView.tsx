@@ -6,7 +6,7 @@ import { opPage } from './Changes.tsx';
 import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
-import { useEditor } from './store.ts';
+import { track, useEditor } from './store.ts';
 
 function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
@@ -30,27 +30,60 @@ function Thumb({ pdf, index, revision, active, changes, onClick }: { pdf: PdfDoc
   );
 }
 
-/** Keep/Cancel for content pushed past the page bottom; Shrink/Cancel for a column that doesn't fit the page. */
+/** New page (copy header/footer, empty) or Cancel for content pushed past the last page; Shrink/Cancel for a column that doesn't fit the page. */
 function PromptDialog() {
   const { prompt, setPrompt, revert, edit, busy } = useEditor();
   if (!prompt) return null;
-  const [text, yes, onYes, no, onNo] =
-    prompt.kind === 'overflow'
-      ? [`Content on page ${prompt.pageIndex + 1} now exceeds the page bottom by ${prompt.by.toFixed(1)} pt.`, 'Keep', () => setPrompt(null), 'Cancel', () => void revert(prompt.count)]
-      : [`The new column would make the table exceed the page width by ${prompt.by.toFixed(1)} pt. Shrink the other columns proportionally (text wraps, font size stays) or cancel?`, 'Shrink other columns', () => (setPrompt(null), void edit([{ ...prompt.op, fit: 'shrink' }])), 'Cancel', () => setPrompt(null)];
+  const choices: { label: string; testId: string; primary?: boolean; run: () => void }[] =
+    prompt.kind === 'newPage'
+      ? [
+          { label: 'Cancel', testId: 'prompt-cancel', run: () => void revert(prompt.count) },
+          { label: 'Empty page (same size)', testId: 'prompt-empty', run: () => (setPrompt(null), void edit([{ type: 'setPageFlow', newPages: 'empty' }])) },
+          { label: 'Copy header/footer', testId: 'prompt-copy', primary: true, run: () => (setPrompt(null), void edit([{ type: 'setPageFlow', newPages: 'copy' }])) },
+        ]
+      : [
+          { label: 'Cancel', testId: 'prompt-cancel', run: () => setPrompt(null) },
+          { label: 'Shrink other columns', testId: 'prompt-shrink', primary: true, run: () => (setPrompt(null), void edit([{ ...prompt.op, fit: 'shrink' }])) },
+        ];
+  const text =
+    prompt.kind === 'newPage'
+      ? `Content runs ${prompt.by.toFixed(1)} pt past the bottom of the last page (${prompt.pageIndex + 1}). Continue it on a new page?`
+      : `The new column would make the table exceed the page width by ${prompt.by.toFixed(1)} pt. Shrink the other columns proportionally (text wraps, font size stays) or cancel?`;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" data-testid="prompt">
       <div className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl">
         <p className="mb-3">{text}</p>
         <div className="flex justify-end gap-2">
-          <button className="rounded px-3 py-1.5 hover:bg-slate-100" disabled={busy} onClick={onNo}>
-            {no}
-          </button>
-          <button className="rounded bg-sky-600 px-3 py-1.5 text-white" disabled={busy} onClick={onYes}>
-            {yes}
-          </button>
+          {choices.map((c) => (
+            <button key={c.testId} data-testid={c.testId} className={c.primary ? 'rounded bg-sky-600 px-3 py-1.5 text-white' : 'rounded px-3 py-1.5 hover:bg-slate-100'} disabled={busy} onClick={c.run}>
+              {c.label}
+            </button>
+          ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+const PROGRESS_AFTER_MS = 1500;
+
+/** The latest running activity, once something has run for 1.5 s, with the elapsed time. */
+function ProgressBanner() {
+  const activities = useEditor((s) => s.activities);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!activities.length) return;
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [activities.length]);
+  const oldest = activities[0];
+  if (!oldest || now - oldest.since < PROGRESS_AFTER_MS) return null;
+  const latest = activities.at(-1)!;
+  return (
+    <div data-testid="progress" role="status" className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm text-white shadow-lg">
+      <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+      <span>{latest.label}</span>
+      <span className="tabular-nums text-white/60">{((now - oldest.since) / 1000).toFixed(1)} s</span>
     </div>
   );
 }
@@ -65,9 +98,11 @@ export function EditorView() {
     let alive = true;
     let loaded: PdfDoc | null = null;
     void (async () => {
-      const res = await fetch(`/api/documents/${st.docId}/pdf?rev=${st.revision}`);
-      if (!res.ok) throw await apiError(res);
-      loaded = await openPdf(new Uint8Array(await res.arrayBuffer()));
+      loaded = await track('Loading the document…', async () => {
+        const res = await fetch(`/api/documents/${st.docId}/pdf?rev=${st.revision}`);
+        if (!res.ok) throw await apiError(res);
+        return openPdf(new Uint8Array(await res.arrayBuffer()));
+      });
       if (alive) setPdf(loaded);
       else void loaded.destroy();
     })().catch((e: Error) => useEditor.getState().setError(e.message));
@@ -84,7 +119,7 @@ export function EditorView() {
       const form = new FormData();
       form.append('file', file);
       if (password) form.append('password', password);
-      const res = await fetch('/api/documents', { method: 'POST', body: form });
+      const res = await track('Uploading and analysing…', () => fetch('/api/documents', { method: 'POST', body: form }));
       if (!res.ok) {
         const err = await apiError(res);
         if (/\((ENCRYPTED|BAD_PASSWORD)\)/.test(err.message)) {
@@ -175,6 +210,7 @@ export function EditorView() {
       </div>
       {st.error && <div data-testid="editor-error" className="bg-red-50 px-4 py-2 text-sm text-red-700">{st.error}</div>}
       <PromptDialog />
+      <ProgressBanner />
       {!st.docId ? (
         <div className="flex flex-1 items-center justify-center text-slate-500">{st.busy ? 'Analyzing…' : 'Open a PDF to edit it.'}</div>
       ) : (

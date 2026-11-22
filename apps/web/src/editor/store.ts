@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { CellSpan, EditOperation, EditResult, PageModel, PageOverflow, Point, Rect, Ruling, StrategyReport, TableSetup } from '@pdf-toolkit/shared';
 import { postEdits } from '../lib/api.ts';
-import { moveOp } from './background.ts';
+import { measureScanLayouts, moveOp } from './background.ts';
 
 export type Tool = 'select' | 'addText' | 'table';
 /**
@@ -29,8 +29,22 @@ export type NewTextStyle = { fontFamily: string; fontSize: number };
  * Cancel takes them back), or a column insert that would leave the page (shrink the others or cancel).
  */
 export type Prompt =
-  | { kind: 'overflow'; pageIndex: number; by: number; count: number }
+  | { kind: 'newPage'; pageIndex: number; by: number; count: number }
   | { kind: 'colFit'; by: number; op: Extract<EditOperation, { type: 'tableInsertCol' }> };
+export type Activity = { id: number; label: string; since: number };
+let activityId = 0;
+
+/** Runs `fn` as a named activity, so a long wait shows progress. */
+export async function track<T>(label: string, fn: (step: (label: string) => void) => Promise<T>): Promise<T> {
+  const st = useEditor.getState();
+  const id = st.begin(label);
+  try {
+    return await fn((l) => useEditor.getState().progress(id, l));
+  } finally {
+    useEditor.getState().end(id);
+  }
+}
+
 /** Arrow-key moves not yet sent, in PDF user space. */
 export type Nudge = { id: string; dx: number; dy: number };
 
@@ -53,6 +67,11 @@ export type EditorState = {
   overflows: PageOverflow[];
   prompt: Prompt | null;
   busy: boolean;
+  /** Running operations, oldest first; the editor shows the latest once it has run 1.5 s. */
+  activities: Activity[];
+  begin: (label: string) => number;
+  progress: (id: number, label: string) => void;
+  end: (id: number) => void;
   error: string | null;
   showChanges: boolean;
   tool: Tool;
@@ -110,6 +129,7 @@ const initial = {
   warnings: [],
   overflows: [] as PageOverflow[],
   prompt: null as Prompt | null,
+  activities: [] as Activity[],
   busy: false,
   error: null,
   showChanges: false,
@@ -162,7 +182,7 @@ function send(get: () => EditorState, ops: EditOperation[] | (() => EditOperatio
     st.setBusy(true);
     st.setError(null);
     try {
-      st.applyResult(await postEdits(st.docId, list, mode));
+      st.applyResult(await track('Applying changes…', () => postEdits(st.docId!, list, mode)));
       return true;
     } catch (e) {
       st.setError((e as Error).message);
@@ -197,9 +217,26 @@ export const useEditor = create<EditorState>((set, get) => ({
     const before = get().overflows;
     if (await send(get, ops, 'append')) {
       set({ redoStack: [] });
-      // Content newly pushed past a page bottom (e.g. a growing row): ask whether to keep it.
-      const worse = get().overflows.find((o) => o.by > (before.find((b) => b.pageIndex === o.pageIndex)?.by ?? 0) + 0.05);
-      if (worse) set({ prompt: { kind: 'overflow', pageIndex: worse.pageIndex, by: worse.by, count: ops.length } });
+      let count = ops.length;
+      // The flow reached scanned pages: measure their layout (on the original) and send it with this change.
+      for (let round = 0; round < 3; round++) {
+        const need = get().overflows.find((o) => o.needsLayout?.length)?.needsLayout;
+        const docId = get().docId;
+        if (!need || !docId) break;
+        const models = need.map((i) => get().origPages[i]!);
+        let layouts: EditOperation[];
+        try {
+          layouts = await track('Measuring scanned page layout…', (step) => measureScanLayouts(docId, models, (i, n) => step(`Measuring scanned page layout ${i}/${n}…`)));
+        } catch (e) {
+          set({ error: (e as Error).message });
+          break;
+        }
+        if (!layouts.length || !(await send(get, layouts, 'append'))) break;
+        count += layouts.length;
+      }
+      // Content newly pushed past the last page: ask how to continue (new page copying the header/footer, empty, or cancel).
+      const worse = get().overflows.find((o) => o.needsPage && o.by > (before.find((b) => b.pageIndex === o.pageIndex)?.by ?? 0) + 0.05);
+      if (worse) set({ prompt: { kind: 'newPage', pageIndex: worse.pageIndex, by: worse.by, count } });
       then?.();
     }
   },
@@ -213,10 +250,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ nudge: null });
     let undone: EditOperation[] = [];
     // An op that was appended together with others is undone on its own; the server keeps no batches.
+    // Measured scan layouts stay (they describe the original); the change before them is undone.
     const ok = await send(get, () => {
       const { ops } = get();
-      undone = ops.slice(-1);
-      return ops.length ? ops.slice(0, -1) : null;
+      const i = ops.findLastIndex((o) => o.type !== 'scanLayout');
+      if (i < 0) return null;
+      undone = [ops[i]!];
+      return ops.filter((_, k) => k !== i);
     }, 'replace');
     if (ok) set((s) => ({ redoStack: [...s.redoStack, undone] }));
   },
@@ -261,4 +301,11 @@ export const useEditor = create<EditorState>((set, get) => ({
     nudgeTimer = setTimeout(flush, 400);
   },
   rendered: () => set((s) => ({ renderCount: s.renderCount + 1 })),
+  begin: (label) => {
+    const id = ++activityId;
+    set((s) => ({ activities: [...s.activities, { id, label, since: Date.now() }] }));
+    return id;
+  },
+  progress: (id, label) => set((s) => ({ activities: s.activities.map((a) => (a.id === id ? { ...a, label } : a)) })),
+  end: (id) => set((s) => ({ activities: s.activities.filter((a) => a.id !== id) })),
 }));

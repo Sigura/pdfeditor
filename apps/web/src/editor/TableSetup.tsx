@@ -26,7 +26,7 @@ import { toCss, type Viewport } from './PageView.tsx';
 import { renderRegion } from './background.ts';
 import type { PdfDoc } from '../lib/pdfjs.ts';
 import { detectLines, measureLook } from './rasterGrid.ts';
-import { useEditor, type SetupDraft } from './store.ts';
+import { track, useEditor, type SetupDraft } from './store.ts';
 
 export const gridOf = (t: Table) => ({ ys: [t.rows[0]!.y1, ...t.rows.map((r) => r.y0)], xs: [t.cols[0]!.x0, ...t.cols.map((c) => c.x1)] });
 
@@ -62,7 +62,7 @@ const within = (r: Ruling, rect: Rect, m: number) =>
 async function scanLines(pdf: PdfDoc, model: PageModel, rect: Rect): Promise<SetupDraft['raster']> {
   if (model.rulings.some((r) => within(r, rect, 2))) return undefined;
   const pad = { x0: rect.x0 - 4, y0: rect.y0 - 4, x1: rect.x1 + 4, y1: rect.y1 + 4 };
-  const region = await renderRegion(pdf, model.pageIndex, pad, 4);
+  const region = await track('Finding the table borders in the scan…', () => renderRegion(pdf, model.pageIndex, pad, 4));
   const px = region.toPx(pad);
   const found = detectLines(region, Math.max(8, (30 * (px.x1 - px.x0)) / (pad.x1 - pad.x0)));
   const rulings = found.rulings.filter((r) => within(r, rect, 4));
@@ -297,7 +297,7 @@ export function TableSetupView({ draft, model, vp, zoom, pdf }: { draft: SetupDr
     if (!draft.raster) return undefined;
     const { ys, xs } = meshLines(mesh);
     const pad = params.borderWidth / 2 + Math.max(1, params.borderWidth / 2);
-    const region = await renderRegion(pdf, draft.pageIndex, { x0: xs[0]! - pad, y0: ys[ys.length - 1]! - pad, x1: xs[xs.length - 1]! + pad, y1: ys[0]! + pad }, 4);
+    const region = await track('Measuring the scan…', () => renderRegion(pdf, draft.pageIndex, { x0: xs[0]! - pad, y0: ys[ys.length - 1]! - pad, x1: xs[xs.length - 1]! + pad, y1: ys[0]! + pad }, 4));
     const cells = ys.slice(0, -1).map((_, r) =>
       xs.slice(0, -1).map((_, c) => {
         const a = cellAnchor(mesh, r, c);

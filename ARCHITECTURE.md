@@ -68,6 +68,8 @@ Discriminated union on `type`, validated with zod:
 | `defineTable`    | `tableId`, `pageIndex`, `vertices` ((rows+1)×(cols+1) `{x,y,snapped}`, top row first), `spans`, `borderWidth`, `headerRows`, `origin`, `raster?` (scanned tables: `paper`, `ink?`, `fills?` [row][col], `inkBoxes?` [row][col] rect + `line` + `ascent`): the Table tool's confirmed setup. Redefines a detected table (same id) or defines a new one. Original-page coordinates, applied during analysis before all other ops |
 | `resizeTable`    | `tableId`, `rowHeights?`, `colWidths?` (top-left corner fixed) |
 | `setTextStyle`   | `elementId` (box), `color?`, `align?`, `lineSpacing?` (× font size), `background?`. Merged per box; layout keeps the box's font and in-line glyph offsets |
+| `setPageFlow`    | `newPages: 'copy'\|'empty'`: how content continues past the last page (last one wins) |
+| `scanLayout`     | `pageIndex`, `lines` (ink y ranges, original coordinates), `paper`: measured layout of a scanned page for the page flow |
 
 The server keeps the original bytes plus the **full ordered list** of operations for a document.
 `POST /edits` accepts `{ ops, mode: 'append' | 'replace' }`. Each call re-applies the full list to
@@ -140,8 +142,26 @@ tables right below a table whose bottom edge changed; paths and images there get
   (`placeNew` in measure mode) and grows its row like other cells. A cell `background` repaints the fill;
   regenerated pattern fills are inserted where the table was painted (under the cell text), not at the
   page end.
-- Content pushed past the page bottom is reported as `overflows` (`{ pageIndex, by }`) in the edit
-  response; the editor asks Keep / Cancel (Cancel takes the last edit back).
+- Page flow (`edit/paging.ts`, after all streams are written): content under a table moves with its
+  bottom edge across the full page width. Each page's units (text boxes, table rows, paths, images; on
+  scanned pages the ink rows of `scanLayout`) are split into header, footer and body. The header and footer
+  are bands of clusters above/below the widest gap of at least 12 pt in the top/bottom 12% of the page,
+  judged by pre-reflow positions, and tables are never bands. Body clusters (overlapping units; table rows
+  are separate) that were pushed and end below the body bottom (footer top + 12 pt, else the document's
+  bottom margin capped at 72 pt) continue at the top of the next page's body. That page's own body moves
+  down by as much and overflows in turn. Cuts fall between clusters, so a row is never split. A page that
+  takes part is redrawn from Form XObjects of the edited pages: one per drawn band (clipped and translated),
+  each without the text and image draws outside its band. The text is dropped so the text layer has no
+  duplicates, and the image draws so scans render fast. Footer bands moved by the reflow go back to their
+  place. New pages only ever go after the last page, so existing page indices, ids and /PieceInfo never shift.
+  Past the last page the response has `overflows` with `needsPage`, and the editor asks Copy header/footer /
+  Empty page (same size) / Cancel. The choice is the op `setPageFlow`. A copy page draws the last page's
+  header and footer bands (scan crops on paper for scanned pages). Scanned pages the flow reaches need a
+  `scanLayout` (`needsLayout`). The editor measures it on the original PDF (`/pdf?original=1`, ink rows
+  between the paper median and the 1st-percentile ink) and sends it with the same change. Page models
+  after the flow show moved boxes and table rows on the pages that draw them, under their ids, and a table
+  cut by the flow appears on both pages. `flowIn` marks continued areas, and `added` marks pages created by
+  the flow. Both are closed to new text and the Table tool.
 
 ## Background fill
 

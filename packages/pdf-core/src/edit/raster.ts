@@ -21,7 +21,7 @@ export type RasterInput = {
 
 const num = (n: number) => String(Number(n.toPrecision(12)) || 0);
 
-function fillOp(c: Color): string {
+export function fillOp(c: Color): string {
   const v = c.values.map(num).join(' ');
   return c.space === 'rgb' ? `${v} rg` : c.space === 'cmyk' ? `${v} k` : c.space === 'gray' ? `${v} g` : '1 g';
 }
@@ -50,14 +50,14 @@ export function rasterTableContent(o: RasterInput): string {
   const out: string[] = ['q'];
   const origBox = inset(cellRect(orig, { row: 0, col: 0, rowSpan: orig.ys.length - 1, colSpan: orig.xs.length - 1 }), -e);
   const covers = [origBox];
-  const strip = intersect({ x0: origBox.x0, x1: origBox.x1, y0: image.bbox.y0, y1: origBox.y0 }, image.bbox);
+  // The whole width under the table moves, like the vector content there; past the page bottom it is kept for the page flow.
+  const strip = intersect({ x0: image.bbox.x0, x1: image.bbox.x1, y0: image.bbox.y0, y1: origBox.y0 }, image.bbox);
   const shift = next ? o.belowShift : 0;
   if (strip && Math.abs(shift) > 1e-6) covers.push(strip);
   if (next) covers.push(inset(cellRect(next, { row: 0, col: 0, rowSpan: next.ys.length - 1, colSpan: next.xs.length - 1 }), -e));
   out.push(`${fillOp(look.paper)} ${covers.map(rectOp).join(' ')} f`);
   if (strip && Math.abs(shift) > 1e-6) {
-    const to = intersect({ ...strip, y0: strip.y0 + shift, y1: strip.y1 + shift }, { ...image.bbox, y1: origBox.y0 + shift });
-    if (to) out.push(draw(to, 0, shift));
+    out.push(draw({ ...strip, y0: strip.y0 + shift, y1: Math.min(strip.y1 + shift, origBox.y0 + shift) }, 0, shift));
   }
   if (!next) return [...out, 'Q'].join('\n');
 

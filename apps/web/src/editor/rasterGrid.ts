@@ -179,3 +179,38 @@ export function measureLook(region: Region, toPx: (r: Rect) => Rect, cells: (Rec
   const inkBoxes = cells.map((row) => row.map((r) => (r ? inkBox(region, toPx(r), t) : null)));
   return { paper, ...(ink && { ink }), fills, inkBoxes };
 }
+
+/**
+ * Ink rows of a scanned page (outside nothing: the server skips rows inside tables): runs of pixel rows
+ * with ink, joined across gaps under 1 pt, in page coordinates, top first; plus the paper colour.
+ */
+export function scanLayout(region: Region, pxPerPt: number): { lines: { y0: number; y1: number }[]; paper: Color } | null {
+  const { img } = region;
+  // A page is mostly paper, which skews Otsu towards the darkest ink; halfway between paper (median) and ink (1st percentile) instead.
+  const hist = new Array<number>(256).fill(0);
+  for (let i = 0; i < img.data.length; i += 4) hist[Math.round(lum(img.data, i))]!++;
+  const quantile = (q: number) => {
+    let acc = 0;
+    return hist.findIndex((n) => (acc += n) >= q * img.width * img.height);
+  };
+  const [ink, paperLum] = [quantile(0.01), quantile(0.5)];
+  if (paperLum - ink < 40) return { lines: [], paper: dominant(img, () => true)! };
+  const t = (ink + paperLum) / 2;
+  const minInk = Math.max(3, img.width * 0.002);
+  const inked = Array.from({ length: img.height }, (_, y) => {
+    let n = 0;
+    for (let x = 0; x < img.width; x++) if (lum(img.data, (y * img.width + x) * 4) < t) n++;
+    return n >= minInk;
+  });
+  const runs: [number, number][] = [];
+  inked.forEach((on, y) => {
+    if (!on) return;
+    const last = runs.at(-1);
+    if (last && y - last[1] <= pxPerPt) last[1] = y;
+    else runs.push([y, y]);
+  });
+  const paper = dominant(img, (_x, _y, l) => l >= t);
+  if (!paper) return null;
+  const yAt = (py: number) => region.toPage(0, py)[1];
+  return { lines: runs.map(([a, b]) => ({ y1: yAt(a - 0.5), y0: yAt(b + 0.5) })), paper };
+}

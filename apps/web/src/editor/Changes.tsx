@@ -4,6 +4,7 @@ import { useEditor } from './store.ts';
 /** Id of the box or table an op changes. */
 export function opTarget(op: EditOperation): string {
   if (op.type === 'addTextBox') return op.id;
+  if (op.type === 'setPageFlow' || op.type === 'scanLayout') return `page-flow`;
   return 'tableId' in op ? op.tableId : op.elementId;
 }
 
@@ -47,6 +48,10 @@ function describe(op: EditOperation, name: string): string {
       return `Cell R${op.row + 1}C${op.col + 1} → “${clip(op.text, 20)}”`;
     case 'defineTable':
       return `Table setup ${op.vertices.length - 1}×${op.vertices[0]!.length - 1}${op.spans.length ? `, ${op.spans.length} merged` : ''}`;
+    case 'setPageFlow':
+      return op.newPages === 'copy' ? 'New pages copy the header/footer' : 'New pages are empty';
+    case 'scanLayout':
+      return `Scan layout of page ${op.pageIndex + 1} (${op.lines.length} lines)`;
     case 'resizeTable':
       return `Resize table ${op.colWidths ? 'columns' : ''}${op.colWidths && op.rowHeights ? ' and ' : ''}${op.rowHeights ? 'rows' : ''}`;
   }

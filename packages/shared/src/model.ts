@@ -105,5 +105,9 @@ export const PageModelSchema = z.object({
   junctions: z.array(PointSchema),
   editable: z.boolean(),
   warnings: z.array(z.string()),
+  /** Areas holding content continued from earlier pages (their elements keep their ids). */
+  flowIn: z.array(RectSchema).optional(),
+  /** Page added by the flow after the last original page. */
+  added: z.boolean().optional(),
 });
 export type PageModel = z.infer<typeof PageModelSchema>;

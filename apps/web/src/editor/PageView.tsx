@@ -284,9 +284,14 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Content continued from earlier pages, and pages the flow added, belong to the pages they came from.
+  const inFlow = (px: number, py: number) => !!model.added || !!model.flowIn?.some((r) => px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1);
+  const flowError = () => useEditor.getState().setError('This area holds content continued from an earlier page: edit it there, or use the cells and boxes shown here.');
+
   const onPageMouseDown = (e: React.MouseEvent) => {
     if (tool !== 'table' || tableSetup || !vp) return;
     const [x, y] = local(e);
+    if (inFlow(...(vp.convertToPdfPoint(x, y) as [number, number]))) return flowError();
     setDraw({ x0: x, y0: y, x1: x, y1: y });
     const move = (ev: MouseEvent) => {
       const [x1, y1] = local(ev);
@@ -311,6 +316,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
     if (tool !== 'addText' || !vp) return select(null);
     const [x, y] = local(e);
     const [px, py] = vp.convertToPdfPoint(x, y);
+    if (inFlow(px, py)) return flowError();
     const id = `n-${Date.now().toString(36)}`;
     const size = newText.fontSize;
     const bbox = { x0: px, y0: py - size * 1.4, x1: Math.min(px + 200, model.view.x1), y1: py };
@@ -335,10 +341,13 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
       task = page.render({ canvas, viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
+      const activity = useEditor.getState().begin(`Rendering page ${model.pageIndex + 1}…`);
       try {
         await task.promise;
       } catch (e) {
         if ((e as Error).name !== 'RenderingCancelledException') throw e;
+      } finally {
+        useEditor.getState().end(activity);
       }
       // pdf.js types the converted points as any[]; they are always [x, y].
       if (!cancelled) {
@@ -368,6 +377,18 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
       <canvas ref={canvasRef} className="block" />
       {vp && (
         <div ref={overlayRef} className="absolute inset-0" data-testid="overlay">
+          {model.flowIn?.map((r, i) => {
+            const c = toCss(vp, r);
+            return (
+              <div
+                key={`flow-${i}`}
+                data-testid="flow-in"
+                title="Continued from an earlier page"
+                className="pointer-events-none absolute border-y border-dashed border-violet-400/70"
+                style={{ left: c.left, top: c.top, width: c.width, height: c.height, background: 'repeating-linear-gradient(135deg, rgba(139,92,246,0.06) 0 6px, transparent 6px 12px)' }}
+              />
+            );
+          })}
           {model.tables.map((t) => (tableSetup?.tableId === t.id ? null : <TableOverlay key={t.id} table={t} vp={vp} zoom={zoom} pdf={pdf} />))}
           {tableSetup?.pageIndex === model.pageIndex && <TableSetupView key={`${tableSetup.tableId}:${JSON.stringify(tableSetup.rect)}`} draft={tableSetup} model={model} vp={vp} zoom={zoom} pdf={pdf} />}
           {draw && (

@@ -382,6 +382,69 @@ async function embeddedType1AndCff() {
   await save('type1-cff.pdf', doc);
 }
 
+/** Two pages with a running header (text + rule) and footer; page 1 ends with a table and a line under it, page 2 has body text. */
+async function pagedTable() {
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const body = Array.from({ length: 8 }, (_, i) => `Body paragraph line ${i + 1} of the page.`);
+  for (let n = 1; n <= 2; n++) {
+    const page = doc.addPage([595, 842]);
+    page.drawText('Quarterly report', { x: 60, y: 800, size: 10, font: helv });
+    page.drawLine({ start: { x: 60, y: 792 }, end: { x: 535, y: 792 }, thickness: 0.5, color: rgb(0.4, 0.4, 0.4) });
+    page.drawText(`Page ${n}`, { x: 280, y: 30, size: 10, font: helv });
+    if (n === 2) {
+      paragraph(page, body, 60, 740, helv, 12);
+      continue;
+    }
+    paragraph(page, body, 60, 740, helv, 12);
+    const cols = [60, 220, 340, 460];
+    const right = 535;
+    const rowH = 24;
+    const top = 230;
+    const data = [
+      ['Item', 'Qty', 'Price', 'Total'],
+      ['Apples', '10', '1.20', '12.00'],
+      ['Pears', '4', '2.50', '10.00'],
+      ['Cherries', '200', '0.10', '20.00'],
+    ];
+    data.forEach((row, r) => row.forEach((cell, c) => page.drawText(cell, { x: cols[c]! + 6, y: top - (r + 1) * rowH + 8, size: 11, font: r === 0 ? bold : helv })));
+    const border = { thickness: 0.8, color: rgb(0.3, 0.3, 0.3) };
+    for (let r = 0; r <= data.length; r++) page.drawLine({ start: { x: cols[0]!, y: top - r * rowH }, end: { x: right, y: top - r * rowH }, ...border });
+    for (const x of [...cols, right]) page.drawLine({ start: { x, y: top }, end: { x, y: top - data.length * rowH }, ...border });
+    page.drawText('Line under the table.', { x: 60, y: 100, size: 12, font: helv });
+  }
+  await save('paged-table.pdf', doc);
+}
+
+/** One scanned page (2 px/pt): header and footer bars, text bars, and a bordered 4 × 4 table near the bottom. No text layer. */
+async function pagedScan() {
+  const doc = await PDFDocument.create();
+  const s = 2;
+  const [pw, ph] = [595, 842];
+  const w = pw * s;
+  const h = ph * s;
+  const px = new Uint8Array(w * h).fill(246);
+  const rect = (x0: number, y0: number, x1: number, y1: number, v: number) => {
+    for (let y = Math.round((ph - y1) * s); y < Math.round((ph - y0) * s); y++) for (let x = Math.round(x0 * s); x < Math.round(x1 * s); x++) px[y * w + x] = v;
+  };
+  rect(60, 798, 220, 808, 50);
+  rect(260, 28, 330, 38, 50);
+  for (let y = 740; y > 500; y -= 16) rect(60, y, 520, y + 8, 60);
+  const xs = [60, 220, 340, 460, 535];
+  const ys = [230, 206, 182, 158, 134];
+  for (let r = 0; r < ys.length - 1; r++) for (let c = 0; c < xs.length - 1; c++) rect(xs[c]! + 6, ys[r + 1]! + 8, xs[c]! + 50, ys[r + 1]! + 15, 55);
+  for (const y of ys) rect(xs[0]! - 0.75, y - 0.75, xs[4]! + 0.75, y + 0.75, 45);
+  for (const x of xs) rect(x - 0.75, ys[4]! - 0.75, x + 0.75, ys[0]! + 0.75, 45);
+  rect(60, 100, 300, 108, 60);
+  const ctx = doc.context;
+  const img = ctx.register(ctx.flateStream(px, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceGray', BitsPerComponent: 8 }));
+  const page = doc.addPage([pw, ph]);
+  page.node.setXObject(PDFName.of('Im1'), img);
+  page.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream(`q ${pw} 0 0 ${ph} 0 0 cm /Im1 Do Q`)));
+  await save('paged-scan.pdf', doc);
+}
+
 await mkdir(outDir, { recursive: true });
 await latinStandard14();
 await embeddedSubset('cyrillic-subset.pdf', ['Привет, мир! Это проверка редактора.', 'Съешь же ещё этих мягких французских булок.'], 'Отчёт за квартал');
@@ -393,3 +456,5 @@ await table();
 await zebraTable();
 await imageTable();
 await embeddedType1AndCff();
+await pagedTable();
+await pagedScan();

@@ -382,6 +382,10 @@ export function reduceEdits(pages: PageModel[], ops: EditOperation[]): EditState
         boxes.set(op.elementId, cur);
         break;
       }
+      case 'setPageFlow':
+      case 'scanLayout':
+        // Read by applyEdits for the page flow.
+        break;
       case 'defineTable':
         // Applied during page analysis (tableDefinitions); the table must exist by now.
         if (!tableIndex.has(op.tableId)) throw new PdfError('INVALID_EDIT', `Op ${i}: unknown table ${op.tableId}`);
@@ -415,7 +419,7 @@ export function reflowBelow(pages: PageModel[], state: EditState): Reflow[] {
     const shift = tableBounds(t.ys, t.xs).y0 - orig.bbox.y0;
     if (Math.abs(shift) < 0.01) continue;
     out.push({ tableId: t.tableId, pageIndex: t.pageIndex, area: orig.bbox, shift });
-    const below = (r: Rect) => r.y1 <= orig.bbox.y0 + 1 && r.x1 >= orig.bbox.x0 && r.x0 <= orig.bbox.x1;
+    const below = (r: Rect) => r.y1 <= orig.bbox.y0 + 1;
     const page = pages[t.pageIndex]!;
     for (const b of page.textBoxes) {
       if (!below(b.bbox)) continue;

@@ -87,6 +87,24 @@ export const ResizeTableOp = z.object({
   colWidths: z.array(finite.positive()).optional(),
 });
 
+/**
+ * How the flow continues past the last page: new pages copy the previous page's header/footer bands
+ * ('copy') or stay blank ('empty'). Without it, content past the last page's body bottom is reported
+ * as an overflow with `needsPage`.
+ */
+export const SetPageFlowOp = z.object({ type: z.literal('setPageFlow'), newPages: z.enum(['copy', 'empty']) });
+/**
+ * Ink layout of a scanned page measured in the browser (original-page coordinates): `lines` are the
+ * y ranges with ink outside tables, top first; `paper` the background colour. The flow cuts and keeps
+ * header/footer bands there.
+ */
+export const ScanLayoutOp = z.object({
+  type: z.literal('scanLayout'),
+  pageIndex: z.number().int().min(0),
+  lines: z.array(z.object({ y0: finite, y1: finite })).max(2000),
+  paper: ColorSchema,
+});
+
 export const EditOperationSchema = z.discriminatedUnion('type', [
   ReplaceTextOp,
   AddTextBoxOp,
@@ -100,6 +118,8 @@ export const EditOperationSchema = z.discriminatedUnion('type', [
   DefineTableOp,
   ResizeTableOp,
   SetTextStyleOp,
+  SetPageFlowOp,
+  ScanLayoutOp,
 ]);
 export type EditOperation = z.infer<typeof EditOperationSchema>;
 

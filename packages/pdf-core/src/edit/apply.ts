@@ -19,6 +19,7 @@ import { cellMinSize, tableBounds, tableDefinitions, reduceEdits, reflowBelow, t
 import { rasterTableContent, type RasterGrid, type RasterInput } from './raster.ts';
 import { headerRowsOf, roleStrokes, zebraRows } from '../model/tablePattern.ts';
 import { writeStoredTables } from '../model/pieceInfo.ts';
+import { flowModels, planFlow, writeFlow, type FlowPage, type FlowUnit } from './paging.ts';
 
 export type ApplyResult = {
   bytes: Uint8Array;
@@ -457,6 +458,8 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   const analyses = analyzeDocument(doc, tableDefinitions(ops));
   const pages: PageModel[] = analyses.map((a) => structuredClone(a.model));
   const state = reduceEdits(pages, ops);
+  const pageFlow = ops.reduce<'copy' | 'empty' | undefined>((m, op) => (op.type === 'setPageFlow' ? op.newPages : m), undefined);
+  const scanLayouts = new Map(ops.flatMap((op) => (op.type === 'scanLayout' ? [[op.pageIndex, op] as const] : [])));
   const reports: StrategyReport[] = [];
   const warnings: string[] = [];
   const patches = new Map<string, { info: StreamInfo; patch: StreamPatch; pageIndex: number }>();
@@ -715,11 +718,12 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   // Paths and images under a table whose bottom moved follow it, like the text boxes and tables there.
   const shiftedPaths = new Map<PathItem, { pageIndex: number; dy: number }>();
   const shiftedImages = new Map<ImageItem, { pageIndex: number; dy: number }>();
-  for (const rf of reflowBelow(pages, state)) {
+  const reflows = reflowBelow(pages, state);
+  for (const rf of reflows) {
     const a = analyses[rf.pageIndex]!;
     const tablePaths = new Set(a.tables.flatMap((t) => t.paths));
     const cellImages = new Set(a.tables.flatMap((t) => [...t.cellImages.values()].flat()));
-    const below = (r: Rect) => r.y1 <= rf.area.y0 + 1 && r.x1 >= rf.area.x0 && r.x0 <= rf.area.x1;
+    const below = (r: Rect) => r.y1 <= rf.area.y0 + 1;
     for (const p of a.interp.paths) {
       const b = p.paint === 'none' || tablePaths.has(p) ? null : pathBox(p);
       if (b && below(b)) shiftedPaths.set(p, { pageIndex: rf.pageIndex, dy: (shiftedPaths.get(p)?.dy ?? 0) + rf.shift });
@@ -910,24 +914,6 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   for (const [p, { pageIndex, dy }] of shiftedPaths) shiftOps(analyses[pageIndex]!, p.streamId, p.opStart, p.opEnd - 1, p.ctm, 0, dy);
   for (const [im, { pageIndex, dy }] of shiftedImages) shiftOps(analyses[pageIndex]!, im.streamId, im.opIndex, im.opIndex, im.ctm, 0, dy);
 
-  // Lowest point of everything that moved or changed, per page, against the page's bottom edge.
-  const lowest = new Map<number, number>();
-  const low = (pageIndex: number, y: number) => lowest.set(pageIndex, Math.min(lowest.get(pageIndex) ?? Infinity, y));
-  for (const te of state.tables.values()) if (!te.deleted) low(te.pageIndex, te.ys[te.ys.length - 1]! + te.dy);
-  for (const e of state.boxes.values()) {
-    const b = e.deleted ? undefined : pages[e.pageIndex]!.textBoxes.find((x) => x.id === e.boxId);
-    if (b) low(e.pageIndex, b.bbox.y0);
-  }
-  for (const [p, { pageIndex, dy }] of shiftedPaths) low(pageIndex, pathBox(p)!.y0 + dy);
-  for (const [im, { pageIndex, dy }] of shiftedImages) low(pageIndex, im.bbox.y0 + dy);
-  const overflows: PageOverflow[] = [];
-  for (const [pageIndex, y] of lowest) {
-    const by = pages[pageIndex]!.view.y0 - y;
-    if (by <= 0.05) continue;
-    overflows.push({ pageIndex, by: Math.round(by * 10) / 10 });
-    warnings.push(`Content on page ${pageIndex + 1} extends ${by.toFixed(1)} pt past the bottom edge`);
-  }
-
   for (const a of analyses) {
     const list = pages[a.pageIndex]!.tables.flatMap((t) => (t.setup ? [{ tableId: t.id, bbox: t.bbox, setup: t.setup, ...(t.pattern && { pattern: t.pattern }) }] : []));
     if (JSON.stringify(list) !== JSON.stringify(a.stored)) writeStoredTables(doc, doc.getPage(a.pageIndex), list);
@@ -947,8 +933,65 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
   }
 
   for (const [, { info, patch, pageIndex }] of patches) writeStream(doc, pageIndex, info, applyPatch(info.content, patch));
+
+  const flowPages = analyses.map((a): FlowPage => {
+    const page = pages[a.pageIndex]!;
+    const span = (r: { y0: number; y1: number }) => ({ y0: r.y0, y1: r.y1 });
+    const tall = (r: Rect) => r.y1 - r.y0 > 0.6 * (page.view.y1 - page.view.y0);
+    // `orig`: where the unit was before the reflow under tables, so user moves and edits count as placed there.
+    const reflowDy = (r: { y1: number }) => reflows.filter((rf) => rf.pageIndex === a.pageIndex && r.y1 <= rf.area.y0 + 1).reduce((x, rf) => x + rf.shift, 0);
+    const unit = (r: { y0: number; y1: number }, dy: number, extra: Partial<FlowUnit> = {}): FlowUnit => ({ ...span(r), orig: { y0: r.y0 - dy, y1: r.y1 - dy }, ...(Math.abs(dy) > 0.01 && { pushed: true }), ...extra });
+    const origBoxes = new Map(a.model.textBoxes.map((b) => [b.id, b.bbox]));
+    const origTables = new Map(a.model.tables.map((t) => [t.id, t.bbox]));
+    const units: FlowUnit[] = page.textBoxes.map((b) => (origBoxes.has(b.id) ? unit(b.bbox, reflowDy(origBoxes.get(b.id)!)) : span(b.bbox)));
+    for (const t of page.tables) {
+      const ob = origTables.get(t.id);
+      const rows = [...t.rows.map(span), ...t.cells.filter((c) => (c.rowSpan ?? 1) > 1).map((c) => span(c.bbox))];
+      for (const r of rows) units.push({ ...r, table: true, ...(ob && { orig: span(ob) }), ...((!ob || r.y0 < ob.y0 - 0.01 || reflowDy(ob)) && { pushed: true }) });
+    }
+    const tablePaths = new Set(a.tables.flatMap((t) => t.paths));
+    const cellImages = new Set(a.tables.flatMap((t) => [...t.cellImages.values()].flat()));
+    for (const p of a.interp.paths) {
+      const b = p.paint === 'none' || tablePaths.has(p) ? null : pathBox(p);
+      if (!b || tall(b)) continue;
+      const dy = shiftedPaths.get(p)?.dy ?? 0;
+      units.push(unit({ y0: b.y0 + dy, y1: b.y1 + dy }, dy));
+    }
+    for (const im of a.interp.images) {
+      if (cellImages.has(im) || tall(im.bbox)) continue;
+      const dy = shiftedImages.get(im)?.dy ?? 0;
+      units.push(unit({ y0: im.bbox.y0 + dy, y1: im.bbox.y1 + dy }, dy));
+    }
+    const layout = scanLayouts.get(a.pageIndex);
+    for (const l of layout?.lines ?? []) {
+      if (a.model.tables.some((t) => l.y0 < t.bbox.y1 - 1 && l.y1 > t.bbox.y0 + 1)) continue;
+      const dy = reflowDy(l);
+      units.push(unit({ y0: l.y0 + dy, y1: l.y1 + dy }, dy));
+    }
+    return { view: page.view, units, ...(layout && { paper: layout.paper }) };
+  });
+  const plan = planFlow(flowPages, pageFlow);
+  const involved = (k: number) => plan.pages[k] !== undefined || reflows.some((rf) => rf.pageIndex === k);
+  const unmeasured = analyses.filter((a) => !a.model.editable && !scanLayouts.has(a.pageIndex));
+  const firstUnmeasured = unmeasured.find((a) => involved(a.pageIndex));
+  const overflows: PageOverflow[] = [];
+  let outPages = pages;
+  if (firstUnmeasured) {
+    const needsLayout = unmeasured.filter((a) => a.pageIndex >= firstUnmeasured.pageIndex).map((a) => a.pageIndex);
+    overflows.push({ pageIndex: firstUnmeasured.pageIndex, by: 0, needsLayout });
+    warnings.push(`Scanned pages ${needsLayout.map((i) => i + 1).join(', ')} need a measured layout before content can flow across pages`);
+  } else {
+    if (plan.overflow) {
+      overflows.push({ ...plan.overflow, needsPage: true });
+      warnings.push(`Content on page ${plan.overflow.pageIndex + 1} extends ${plan.overflow.by.toFixed(1)} pt past the bottom of the body area`);
+    }
+    if (plan.pages.some(Boolean)) {
+      writeFlow(doc, plan);
+      outPages = flowModels(pages, plan);
+    }
+  }
   await doc.flush();
   fonts.finalize();
   const bytes = snapshot ? writeIncremental(original, doc.context, snapshot) : await doc.save({ useObjectStreams: false });
-  return { bytes, reports, warnings, pages, overflows };
+  return { bytes, reports, warnings, pages: outPages, overflows };
 }

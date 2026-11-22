@@ -1,7 +1,9 @@
 import type { Color, EditOperation, PageModel, Rect } from '@pdf-toolkit/shared';
 import type { PdfDoc } from '../lib/pdfjs.ts';
 import { toCss, type Viewport } from './PageView.tsx';
-import type { Region } from './rasterGrid.ts';
+import { scanLayout, type Region } from './rasterGrid.ts';
+import { apiError } from '../lib/api.ts';
+import { openPdf } from '../lib/pdfjs.ts';
 
 export type Detected = { color: Color; source: 'shape' | 'pixels' };
 
@@ -112,4 +114,25 @@ export function moveOp(model: PageModel, ops: EditOperation[], id: string, dx: n
   const dest = { x0: box.bbox.x0 + dx, y0: box.bbox.y0 + dy, x1: box.bbox.x1 + dx, y1: box.bbox.y1 + dy };
   const background = fillAt(model, dest, fillOf(ops, id));
   return { type: 'moveElement', elementId: id, dx, dy, ...(background !== undefined && { background }) };
+}
+
+const LAYOUT_PX_PER_PT = 2;
+
+/** scanLayout ops for scanned pages, measured on the original document (the flow works in original coordinates). */
+export async function measureScanLayouts(docId: string, pages: PageModel[], onStep: (i: number, n: number) => void): Promise<EditOperation[]> {
+  const res = await fetch(`/api/documents/${docId}/pdf?original=1`);
+  if (!res.ok) throw await apiError(res);
+  const pdf = await openPdf(new Uint8Array(await res.arrayBuffer()));
+  try {
+    const ops: EditOperation[] = [];
+    for (const [i, m] of pages.entries()) {
+      onStep(i + 1, pages.length);
+      const region = await renderRegion(pdf, m.pageIndex, m.view, LAYOUT_PX_PER_PT);
+      const l = scanLayout(region, LAYOUT_PX_PER_PT);
+      if (l) ops.push({ type: 'scanLayout', pageIndex: m.pageIndex, lines: l.lines.slice(0, 2000), paper: l.paper });
+    }
+    return ops;
+  } finally {
+    void pdf.destroy();
+  }
 }

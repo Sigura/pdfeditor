@@ -149,15 +149,15 @@ export function createApp(opts: { store?: DocumentStore } = {}) {
     return c.json(page);
   });
 
-  // Current revision for in-browser rendering; ?download=1 sets an attachment disposition.
-  const sendCurrent = async (id: string, attachment: boolean) => {
+  // Current revision for in-browser rendering (?original=1: the uploaded file, for measurements in original coordinates).
+  const sendCurrent = async (id: string, attachment: boolean, original = false) => {
     const meta = await store.meta(id);
-    const bytes = await store.current(id);
+    const bytes = original ? await store.original(id) : await store.current(id);
     const headers: Record<string, string> = { 'Content-Type': 'application/pdf', 'Cache-Control': 'no-store' };
     if (attachment) headers['Content-Disposition'] = contentDisposition(meta.fileName.replace(/\.pdf$/i, '') + (meta.revision ? '-edited.pdf' : '.pdf'));
     return new Response(new Uint8Array(bytes), { status: 200, headers });
   };
-  app.get('/api/documents/:id/pdf', (c) => sendCurrent(c.req.param('id'), false));
+  app.get('/api/documents/:id/pdf', (c) => sendCurrent(c.req.param('id'), false, c.req.query('original') === '1'));
   app.get('/api/documents/:id/download', (c) => sendCurrent(c.req.param('id'), true));
 
   return { app, store };
