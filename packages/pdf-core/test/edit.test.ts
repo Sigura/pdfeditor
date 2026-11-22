@@ -883,20 +883,26 @@ describe('table paging (paged-table.pdf)', () => {
     }
     expect(yes.pages.reduce((n, p) => n + p.tables[0]!.rows.length, 0)).toBe(t.rows.length + 60 + 3);
 
-    // Without the header, a continued part starts with the table's top edge (2 pt black), not the row line it had (0.8 pt grey).
+    // Without the header, a continued part starts with the table's top edge (2 pt black), not the row line it had (0.8 pt grey);
+    // a part followed by a cut ends with the table's bottom edge.
     const S = 4;
     const dark = (img: Awaited<ReturnType<typeof renderGray>>, y: number) => {
       let n = 0;
       for (let v = y - 3; v < y + 3; v += 1 / S) if (img.at(140, v) < 40) n++;
       return n;
     };
-    const [orig0, no1, no2] = await Promise.all([renderGray(original, S, 0), renderGray(no.bytes, S, 1), renderGray(no.bytes, S, 2)]);
+    const [orig0, no0, no1, no2] = await Promise.all([renderGray(original, S, 0), renderGray(no.bytes, S, 0), renderGray(no.bytes, S, 1), renderGray(no.bytes, S, 2)]);
     const edge = dark(orig0, t.rows[0]!.y1);
     expect(edge).toBeGreaterThanOrEqual(7);
     expect(dark(orig0, t.rows[1]!.y1)).toBe(0);
     for (const [k, img] of [[1, no1], [2, no2]] as const) {
       const top = no.pages[k]!.tables.find((x) => x.id === t.id)!.rows[0]!.y1;
       expect(Math.abs(dark(img, top) - edge), `page ${k + 1}`).toBeLessThanOrEqual(1);
+    }
+    expect(dark(orig0, t.rows.at(-1)!.y0), 'original bottom edge').toBe(edge);
+    for (const [k, img] of [[0, no0], [1, no1], [2, no2]] as const) {
+      const bottom = no.pages[k]!.tables.find((x) => x.id === t.id)!.rows.at(-1)!.y0;
+      expect(Math.abs(dark(img, bottom) - edge), `bottom of page ${k + 1}`).toBeLessThanOrEqual(1);
     }
   });
 

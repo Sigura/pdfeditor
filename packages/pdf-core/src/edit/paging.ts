@@ -21,15 +21,17 @@ export type FlowPage = {
   units: FlowUnit[];
   /** Header-row bands of the page's tables (those with header rows and body rows under them). */
   headers?: Record<string, Span>;
-  /** Top edge of the page's tables (see tableTop). */
-  tops?: Record<string, TableTop>;
+  /** Top and bottom edges of the page's tables (see tableEdge). */
+  tops?: Record<string, TableEdge>;
+  bottoms?: Record<string, TableEdge>;
   /** Scanned page with a measured layout: uncovered areas get the paper colour. */
   paper?: Color;
 };
 /**
  * The edited page `src`, clipped to its band `y0..y1` and translated by `dy`. `repeat`: the header rows
  * of that table, repeated over its continued part. `omit`: areas whose text is left out (page numbers).
- * `edge`: that table's top edge (only its width), drawn over the top of a continued part without a header.
+ * `edge`: that table's top (bottom) edge (only its width), drawn over the top of a continued part without
+ * a header (the bottom of a part followed by a cut).
  */
 export type FlowDraw = Span & { src: number; dy: number; repeat?: string; omit?: Rect[]; edge?: { tableId: string; x0: number; x1: number } };
 export type PagePlan = {
@@ -69,17 +71,18 @@ const EPS = 0.5;
 type TableRef = { tableId?: string; row?: number };
 
 /**
- * A table's top edge line at `y`, painted within `ext` of it (the border, or the thicker row line, with
- * room for antialiasing or a scan's blur), across `x0..x1`.
+ * A table's top (bottom) edge line at `y`, painted within `ext` of it (the border, or the thicker row
+ * line, with room for antialiasing or a scan's blur), across `x0..x1`.
  */
-export type TableTop = { y: number; ext: number; x0: number; x1: number };
+export type TableEdge = { y: number; ext: number; x0: number; x1: number };
 
-export function tableTop(t: Table): TableTop | undefined {
+export function tableEdge(t: Table, side: 'top' | 'bottom'): TableEdge | undefined {
   const bw = t.setup?.borderWidth ?? 0;
-  const strokes = t.pattern && (['outerTop', 'bodyRow', 'headerSeparator'] as const).flatMap((r) => roleStrokes(t.pattern!, r));
+  const roles = side === 'top' ? (['outerTop', 'bodyRow', 'headerSeparator'] as const) : (['outerBottom', 'bodyRow', 'headerSeparator'] as const);
+  const strokes = t.pattern && roles.flatMap((r) => roleStrokes(t.pattern!, r));
   const ext = t.setup?.origin === 'raster' ? bw / 2 + Math.max(1, bw / 2) : strokes ? Math.max(0, ...strokes.map((s) => Math.abs(s.offset) + s.width / 2)) + 0.5 : undefined;
   if (ext === undefined || !t.rows.length) return undefined;
-  return { y: t.rows[0]!.y1, ext, x0: t.bbox.x0 - ext, x1: t.bbox.x1 + ext };
+  return { y: side === 'top' ? t.rows[0]!.y1 : t.rows.at(-1)!.y0, ext, x0: t.bbox.x0 - ext, x1: t.bbox.x1 + ext };
 }
 const clusters = (spans: (Span & TableRef & { table?: boolean; pushed?: boolean })[]) => {
   const out: (Span & TableRef & { table: boolean; pushed: boolean })[] = [];
@@ -117,8 +120,11 @@ export function pageBands(view: Rect, units: FlowUnit[]): { header?: Span; foote
 }
 
 /** `repeat`: a copy of a table's header rows over its continued part (not content of its own). */
-/** `edge`: the first row of a continued part without a header, which gets its table's top edge. */
-type Cluster = Span & TableRef & { src: number; table: boolean; pushed: boolean; gapAbove: number; repeat?: string; edge?: TableTop };
+/**
+ * `edge`: the first row of a continued part without a header, which gets its table's top edge;
+ * `bottomEdge`: the last row before a cut, which gets its table's bottom edge.
+ */
+type Cluster = Span & TableRef & { src: number; table: boolean; pushed: boolean; gapAbove: number; repeat?: string; edge?: TableEdge; bottomEdge?: TableEdge };
 
 /**
  * Lays the body content of every page out again: content pushed past a page's body bottom continues
@@ -188,6 +194,10 @@ export function planFlow(pages: FlowPage[], newPages: 'copy' | 'empty' | undefin
         out.unshift({ ...c, pushed: true });
       }
       if (placed.some((c) => c.tableId === cutTable && !c.repeat) && !splits.some((s) => s.tableId === cutTable)) splits.push({ tableId: cutTable, pageIndex: k + 1 });
+      // The part left before the cut ends with its table's bottom edge instead of the row line it had.
+      const end = placed.at(-1)!;
+      const bottom = end.tableId === cutTable && !end.repeat ? pages[end.src]!.bottoms?.[cutTable] : undefined;
+      if (bottom && end.y0 > bottom.y + EPS) placed[placed.length - 1] = { ...end, bottomEdge: bottom };
     }
     const lowest = Math.min(...placed.filter((c) => c.src !== k || c.pushed || Math.abs(c.dy) > 0.01).map((c) => c.y0 + c.dy));
     if (k === last && !newPages && lowest < lim.bottom - 0.05) {
@@ -246,13 +256,20 @@ function pagePlan(k: number, i: Info | undefined, placed: (Cluster & { dy: numbe
   const flowIn: Rect[] = [];
   const view = (i ?? template)?.p.view;
   placed.forEach((c, idx) => {
-    if (c.src === k && Math.abs(c.dy) < 0.01 && stTop !== undefined && c.y0 >= stTop - 2) return;
+    const [top, bottom] = [c.edge, c.bottomEdge];
+    const edge = (e: TableEdge, y: number) => draws.push({ src: c.src, y0: e.y - e.ext, y1: e.y + e.ext, dy: y + c.dy - e.y, edge: { tableId: c.tableId!, x0: e.x0, x1: e.x1 } });
+    if (c.src === k && Math.abs(c.dy) < 0.01 && stTop !== undefined && c.y0 >= stTop - 2) {
+      // Inside the part that stays (draws[0]), which then stops above the edge.
+      if (bottom) {
+        draws[0]!.y0 = Math.max(draws[0]!.y0, c.y0 + bottom.ext);
+        edge(bottom, c.y0);
+      }
+      return;
+    }
     const p = pad(c, idx);
-    if (c.edge) {
-      const e = c.edge;
-      push({ src: c.src, y0: c.y0 - p, y1: c.y1 - e.ext, dy: c.dy });
-      draws.push({ src: c.src, y0: e.y - e.ext, y1: e.y + e.ext, dy: c.y1 + c.dy - e.y, edge: { tableId: c.tableId!, x0: e.x0, x1: e.x1 } });
-    } else push({ src: c.src, y0: c.y0 - p, y1: c.y1 + p, dy: c.dy, ...(c.repeat && { repeat: c.repeat }) });
+    push({ src: c.src, y0: bottom ? c.y0 + bottom.ext : c.y0 - p, y1: top ? c.y1 - top.ext : c.y1 + p, dy: c.dy, ...(c.repeat && { repeat: c.repeat }) });
+    if (top) edge(top, c.y1);
+    if (bottom) edge(bottom, c.y0);
     if (c.src !== k && view) flowIn.push({ x0: view.x0, x1: view.x1, y0: c.y0 + c.dy, y1: c.y1 + c.dy });
   });
   const fixedSrc = template ? last : k;
