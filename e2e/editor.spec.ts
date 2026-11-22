@@ -1004,3 +1004,36 @@ test('Tab reaches the text boxes and table handles on the page and selects them'
   await expect(page.getByTestId('box-editor')).toHaveCount(0);
   await expect(page.getByTestId('inspector-box')).toBeVisible();
 });
+
+test('find and replace: Ctrl+F finds cells and boxes, Enter selects the match, Replace and Replace all edit them', async ({ page }) => {
+  await open(page, 'table.pdf');
+  await page.keyboard.press('Control+f');
+  const input = page.getByTestId('find-input');
+  await expect(input).toBeFocused();
+  await input.fill('apples');
+  await expect(page.getByTestId('find-count')).toHaveText('1 of 1');
+  await input.press('Enter');
+  await expect(page.getByTestId('inspector-cell')).toContainText('Apples');
+  await page.getByTestId('replace-input').fill('Plums');
+  await page.getByTestId('replace-one').click();
+  await expect(changes(page).last()).toHaveText(/→ “Plums”/);
+  await expect(page.getByTestId('find-count')).toHaveText('no matches');
+  await input.fill('plum');
+  await expect(page.getByTestId('find-count')).toHaveText('1 of 1');
+
+  // A fresh tab: otherwise the reload reopens the edited table.pdf.
+  await page.evaluate(() => sessionStorage.clear());
+  await open(page, 'latin-standard14.pdf');
+  await page.keyboard.press('Control+f');
+  await page.getByTestId('find-input').fill('report');
+  const count = Number((await page.getByTestId('find-count').textContent())!.split(' of ')[1]);
+  expect(count).toBeGreaterThan(0);
+  await page.getByTestId('find-input').press('Enter');
+  await expect(page.getByTestId('inspector-box')).toBeVisible();
+  await page.getByTestId('replace-input').fill('Summary');
+  await page.getByTestId('replace-all').click();
+  await expect(changes(page)).toHaveCount(count);
+  await expect(page.getByTestId('find-count')).toHaveText('no matches');
+  await page.getByTestId('find-input').press('Escape');
+  await expect(page.getByTestId('find-bar')).toHaveCount(0);
+});

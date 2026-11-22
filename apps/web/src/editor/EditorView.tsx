@@ -4,6 +4,7 @@ import { apiError, downloadBlob } from '../lib/api.ts';
 import { askConfirm, askPassword, modalOpen, useModalFocus } from '../lib/Dialogs.tsx';
 import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
 import { opPage } from './Changes.tsx';
+import { FindBar } from './Find.tsx';
 import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
@@ -322,6 +323,7 @@ const SHORTCUTS: [string, string][] = [
   ['Ctrl + 0', 'Fit page width'],
   ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
   ['Ctrl + S', 'Download'],
+  ['Ctrl + F', 'Find and replace in text boxes and table cells (Enter: next, Shift + Enter: previous)'],
   ['Enter', 'Edit the selected box or cell'],
   ['Arrows (Shift: 10 pt)', 'Move the selection by 1 pt; in a table, go to the next cell'],
   ['Tab / Shift + Tab', 'Next / previous text box or table handle (selects it); in a selected table cell, the next / previous cell'],
@@ -372,6 +374,7 @@ export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }
   const sectionRef = useRef<HTMLElement>(null);
   const [dropActive, setDropActive] = useState(false);
   const [help, setHelp] = useState(false);
+  const [find, setFind] = useState(false);
 
   const shown = useRef<PdfDoc | null>(null);
   useEffect(() => {
@@ -488,6 +491,12 @@ export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }
       if (!s.docId || s.prompt) return;
       if (modalOpen()) {
         if (e.key === 'Escape' || e.key === '?') setHelp(false);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !(e.target instanceof HTMLElement && e.target.isContentEditable)) {
+        e.preventDefault();
+        setFind(true);
+        document.querySelector<HTMLInputElement>('[data-testid=find-input]')?.select();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -655,6 +664,7 @@ export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }
           </button>
         </div>
       )}
+      {find && st.docId && <FindBar onClose={() => setFind(false)} />}
       <TiltBanner />
       <PromptDialog />
       {help && <ShortcutHelp onClose={() => setHelp(false)} />}
