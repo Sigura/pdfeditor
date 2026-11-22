@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Color, PageModel, Rect, StrategyReport, TextBox } from '@pdf-toolkit/shared';
+import { modalOpen } from '../lib/Dialogs.tsx';
 import type { PdfDoc } from '../lib/pdfjs.ts';
 import { opTarget } from './Changes.tsx';
 import { fillAt, moveOp, registerCanvas } from './background.ts';
@@ -238,7 +239,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
     const onKey = (e: KeyboardEvent) => {
       const st = useEditor.getState();
       const t = e.target;
-      if (t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
+      if (st.prompt || modalOpen() || (t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)))) return;
       const { vp: v, model: m } = latest.current;
       const key = e.key.toLowerCase();
       if ((e.ctrlKey || e.metaKey) && (key === 'z' || key === 'y')) {
@@ -277,6 +278,11 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
         } else if (e.key === 'Enter') {
           e.preventDefault();
           st.editCell(st.cell);
+        } else if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault();
+          const { tableId, row, col } = st.cell;
+          const text = m.tables.find((x) => x.id === tableId)?.cells.find((c) => c.row === row && c.col === col)?.text;
+          if (text) void st.edit([{ type: 'setCellText', tableId, row, col, text: '' }]);
         } else if (e.key === 'Escape') st.selectCell(null);
       }
     };

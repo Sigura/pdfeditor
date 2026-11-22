@@ -46,7 +46,7 @@ function describe(op: EditOperation, name: string): string {
     case 'tableDeleteCol':
       return `Delete column ${op.index + 1}`;
     case 'setCellText':
-      return `Cell R${op.row + 1}C${op.col + 1} → “${clip(op.text, 20)}”`;
+      return op.text ? `Cell R${op.row + 1}C${op.col + 1} → “${clip(op.text, 20)}”` : `Clear cell R${op.row + 1}C${op.col + 1}`;
     case 'defineTable':
       return `Table setup ${op.vertices.length - 1}×${op.vertices[0]!.length - 1}${op.spans.length ? `, ${op.spans.length} merged` : ''}`;
     case 'setPageFlow':
