@@ -130,6 +130,7 @@ Behaviour:
 | `zebra-table.pdf` | 4 × 5 table: header band with a thicker separator, zebra rows, a merged "Total" row |
 | `image-table.pdf` | 3 × 4 table with a picture in a body cell, text, a rule and a logo under it |
 | `scanned-table.pdf` | image-only page: a scanned 4-column, 5-row table (grey header row) with text bars above and below |
+| `scanned-table-rotated.pdf` | the same page with the scan stored a quarter turn round and placed rotated back |
 
 ## License note
 
