@@ -482,7 +482,9 @@ test('scanned table: Confirm sends the ink box of every cell, a row border stops
   await page.mouse.up();
   const heights = (await resized).postDataJSON().ops[0].rowHeights as number[];
   expect(heights[1]!.toFixed(1)).toBe(min);
-  await expect(changes(page)).toHaveText([/Table setup 5×4/, /Resize table rows/]);
+  // The reflow below the table reaches a scanned page, so the editor then measures its layout and sends it.
+  const three = [/Table setup 5×4/, /Resize table rows/, /Scan layout of page 1/];
+  await expect(changes(page)).toHaveText(three, { timeout: 15_000 });
   await expect(page.getByTestId('editor-error')).toHaveCount(0);
 
   // The Inspector's height field has the same minimum: smaller values are reverted without a request.
@@ -492,7 +494,7 @@ test('scanned table: Confirm sends the ink box of every cell, a row border stops
   await height.fill('10');
   await height.press('Enter');
   await expect(height).toHaveValue(String(Number(heights[1]!.toFixed(2))));
-  await expect(changes(page)).toHaveText([/Table setup 5×4/, /Resize table rows/]);
+  await expect(changes(page)).toHaveText(three);
 });
 
 test('cell editor style bar: Esc cancels from the bar, a picked font keeps the editor focused, Tab walks back into the text', async ({ page }) => {
