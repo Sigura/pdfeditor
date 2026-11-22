@@ -1,10 +1,12 @@
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PDFDocument, PDFName } from 'pdf-lib';
 import { createApp } from '../src/app.ts';
 import { sanitizeFileName } from '../src/http.ts';
 import { splitFileArg } from '../src/cli.ts';
 import { config } from '../src/config.ts';
-import { configureFonts } from '@pdf-toolkit/pdf-core';
+import { configureFonts, fontIndex } from '@pdf-toolkit/pdf-core';
 import { makePdf } from '../../../packages/pdf-core/test/helpers.ts';
 
 describe('POST /api/merge', () => {
@@ -115,5 +117,26 @@ describe('GET /api/fonts/:id/sample.svg', () => {
     const plex = fonts.find((f) => f.postscriptName === 'IBMPlexMono-Italic')!;
     expect((await app.request(`/api/fonts/${plex.id}/sample.svg`)).status).toBe(200);
     expect((await app.request('/api/fonts/99999/sample.svg')).status).toBe(404);
+  });
+});
+
+describe('font index coverage', () => {
+  it('reads format 12 cmap groups into the same ranges as fontkit characterSet', () => {
+    const fontkit = createRequire(fileURLToPath(new URL('../../../packages/pdf-core/package.json', import.meta.url)))('fontkit') as {
+      openSync(file: string): { characterSet: number[]; _cmapProcessor: { cmap: { version: number } } };
+    };
+    configureFonts({ dirs: [], bundled: config.bundledFonts, system: false });
+    const inter = fontIndex().faces.filter((f) => f.family.startsWith('Inter'));
+    expect(inter.length).toBeGreaterThan(10);
+    for (const face of inter) {
+      const f = fontkit.openSync(face.file);
+      expect(f._cmapProcessor.cmap.version).toBe(12);
+      const ranges: number[] = [];
+      for (const cp of [...new Set(f.characterSet)].sort((a, b) => a - b)) {
+        if (ranges.length && ranges[ranges.length - 1] === cp - 1) ranges[ranges.length - 1] = cp;
+        else ranges.push(cp, cp);
+      }
+      expect([...face.coverage]).toEqual(ranges);
+    }
   });
 });
