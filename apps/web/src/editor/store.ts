@@ -53,6 +53,9 @@ export const arrangement = (ops: EditOperation[]): ArrangePages | undefined => o
 export const pageOrder = (ops: EditOperation[], pages: PageModel[]): number[] => displayOrder(arrangement(ops), pages.length, pages.filter((p) => !p.added).length);
 
 /** 1-based number of edit page `k` as shown. */
+/** Edits made since the last download. */
+export const hasUnsaved = (s: { ops: EditOperation[]; revision: number; downloadedRevision: number }) => s.ops.length > 0 && s.revision !== s.downloadedRevision;
+
 export const pageNo = (s: { ops: EditOperation[]; pages: PageModel[] }, k: number): number => pageOrder(s.ops, s.pages).indexOf(k) + 1;
 
 export type Nudge = { id: string; dx: number; dy: number };
@@ -374,7 +377,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 // The document lives on the server only for the session's TTL and the page keeps no handle to it.
 window.addEventListener('beforeunload', (e) => {
   const s = useEditor.getState();
-  if (!s.ops.length || s.revision === s.downloadedRevision) return;
+  if (!hasUnsaved(s)) return;
   e.preventDefault();
   // Older Chrome/Safari only show the prompt when returnValue is set.
   e.returnValue = '';

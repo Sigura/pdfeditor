@@ -37,6 +37,31 @@ test('download right after a nudge includes the move', async ({ page }) => {
   expect(edited.find((i) => i.str === 'Quarterly Report')!.x).toBeCloseTo(before.x + 3, 3);
 });
 
+test('page keys stay off under the shortcut help; unsaved marker and Ctrl+S download', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  const box = page.getByTestId('text-box').first();
+  await box.click();
+  await page.keyboard.press('ArrowRight');
+  await expect(changes(page)).toHaveCount(1);
+  await expect(page.getByTestId('unsaved')).toBeVisible();
+
+  await page.keyboard.press('?');
+  await expect(page.getByTestId('shortcuts')).toBeVisible();
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Delete');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('shortcuts')).toBeHidden();
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('(1.0, 0.0 pt)');
+
+  const [download] = await Promise.all([page.waitForEvent('download'), page.keyboard.press('Control+s')]);
+  expect(download.suggestedFilename()).toBe('latin-standard14-edited.pdf');
+  await expect(page.getByTestId('unsaved')).toBeHidden();
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('(1.0, 0.0 pt)');
+});
+
 test('arrange pages of an edited PDF, then edit the result', async ({ page }) => {
   await open(page, 'latin-standard14.pdf');
   await page.getByTestId('text-box').first().click();
@@ -99,7 +124,7 @@ test('page tools in the editor: reorder, blank, rotate and delete are changes th
   expect(first.text).toBe((await pdfText(new Uint8Array(readFileSync(fixture('latin-standard14.pdf'))), 2)).text);
   expect((await pdfText(bytes, 2)).text).toBe('');
 
-  await page.getByTitle('Undo (Ctrl+Z)').click();
+  await page.getByTitle('Undo (Ctrl + Z)').click();
   await expect.poll(order).toEqual([1, 0, 2]);
   await expect(changes(page)).toHaveCount(3);
 });

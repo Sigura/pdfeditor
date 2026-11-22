@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentInfo, EditOperation } from '@pdf-toolkit/shared';
 import { apiError, downloadBlob } from '../lib/api.ts';
-import { askConfirm, askPassword } from '../lib/Dialogs.tsx';
+import { askConfirm, askPassword, modalOpen } from '../lib/Dialogs.tsx';
 import { openPdf, renderThumbnail, type PdfDoc } from '../lib/pdfjs.ts';
 import { opPage } from './Changes.tsx';
 import { FontPicker } from './FontPicker.tsx';
 import { Inspector } from './Inspector.tsx';
 import { PageView } from './PageView.tsx';
-import { arrangement, pageNo, pageOrder, track, useEditor } from './store.ts';
+import { arrangement, hasUnsaved, pageNo, pageOrder, track, useEditor } from './store.ts';
 import { StraightenBar, TiltBanner } from './Deskew.tsx';
 
 function Thumb({ pdf, index, no, rotate, revision, active, changes, onClick }: { pdf: PdfDoc; index: number; no: number; rotate: number; revision: number; active: boolean; changes: number; onClick: () => void }) {
@@ -75,7 +75,7 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
     list.splice(at < 0 ? list.length : at, 0, item);
     if (list.some((e, i) => e.page !== shown[i])) commit(list);
   };
-  const tool = 'rounded bg-white/90 px-1 text-xs leading-5 shadow hover:bg-sky-100 disabled:opacity-40';
+  const tool = 'h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600 disabled:opacity-40';
   return (
     <>
       {order.map((k, i) => {
@@ -105,14 +105,14 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
           >
             <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} revision={st.revision} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
             {own && (
-              <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-hover:flex">
-                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise" onClick={() => rotate(k)}>
+              <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-focus-within:flex group-hover:flex">
+                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise" aria-label="Rotate page" onClick={() => rotate(k)}>
                   ↻
                 </button>
-                <button data-testid="thumb-blank" className={tool} disabled={st.busy} title="Insert a blank page after this one" onClick={() => insertBlank(k)}>
+                <button data-testid="thumb-blank" className={tool} disabled={st.busy} title="Insert a blank page after this one" aria-label="Insert blank page after" onClick={() => insertBlank(k)}>
                   +
                 </button>
-                <button data-testid="thumb-delete" className={tool} disabled={st.busy || shown.length < 2} title="Delete this page" onClick={() => remove(k)}>
+                <button data-testid="thumb-delete" className={`${tool} hover:text-red-600`} disabled={st.busy || shown.length < 2} title="Delete page" aria-label="Delete page" onClick={() => remove(k)}>
                   ×
                 </button>
               </div>
@@ -171,7 +171,16 @@ function PromptDialog() {
   );
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30" data-testid="prompt">
-      <div className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="max-w-md rounded-lg bg-white p-4 text-sm shadow-xl"
+        onKeyDown={(e) => {
+          if (e.key !== 'Escape' || busy) return;
+          e.stopPropagation();
+          choices.find((c) => c.testId === 'prompt-cancel')?.run();
+        }}
+      >
         <p className="mb-3">{text}</p>
         {prompt.kind === 'newPage' && prompt.tableIds.length > 0 && (
           <div className="mb-2">
@@ -189,7 +198,7 @@ function PromptDialog() {
         )}
         <div className="flex justify-end gap-2">
           {choices.map((c) => (
-            <button key={c.testId} data-testid={c.testId} className={c.primary ? 'rounded bg-sky-600 px-3 py-1.5 text-white' : 'rounded px-3 py-1.5 hover:bg-slate-100'} disabled={busy} onClick={c.run}>
+            <button key={c.testId} data-testid={c.testId} autoFocus={c.primary} className={c.primary ? 'rounded bg-sky-600 px-3 py-1.5 text-white' : 'rounded px-3 py-1.5 hover:bg-slate-100'} disabled={busy} onClick={c.run}>
               {c.label}
             </button>
           ))}
@@ -206,10 +215,14 @@ const SHORTCUTS: [string, string][] = [
   ['Ctrl + wheel, Ctrl + = / −', 'Zoom in / out'],
   ['Ctrl + 0', 'Fit page width'],
   ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
+  ['Ctrl + S', 'Download'],
   ['Enter', 'Edit the selected box or cell'],
   ['Arrows (Shift: 10 pt)', 'Move the selection by 1 pt; in a table, go to the next cell'],
   ['Tab / Shift + Tab', 'Next / previous table cell'],
-  ['Delete', 'Remove the selection'],
+  ['Delete', 'Remove the selected box or table; clear the selected cell'],
+  ['Esc', 'Deselect; close this list'],
+  ['Alt while dragging', 'Turn snapping off'],
+  ['Violet handle', 'Click to select a whole table (arrows nudge it), drag to move it'],
   ['Ctrl + Enter / Esc', 'Apply / cancel text editing'],
   ['?', 'Show this list'],
 ];
@@ -309,7 +322,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
   const open = async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') return st.setError(`${file.name}: not a PDF`);
     const cur = useEditor.getState();
-    if (cur.ops.length && cur.revision !== cur.downloadedRevision && !(await askConfirm(`Open ${file.name}? Changes to ${cur.fileName} that you haven't downloaded will be lost.`, 'Open'))) return;
+    if (hasUnsaved(cur) && !(await askConfirm(`Open ${file.name}? Changes to ${cur.fileName} that you haven't downloaded will be lost.`, 'Open'))) return;
     await upload(file);
   };
 
@@ -359,6 +372,11 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
     }
   };
 
+  const downloadNow = useRef<() => void>(() => {});
+  downloadNow.current = () => {
+    if (!downloading) void download(downloadBlob, true);
+  };
+
   useEffect(() => {
     // Read from the store, not the render: StrictMode runs the effect twice with the same render.
     const f = useEditor.getState().incoming;
@@ -379,7 +397,18 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = useEditor.getState();
-      if (!s.docId || s.prompt || typing(e.target)) return;
+      if (!s.docId || s.prompt) return;
+      if (modalOpen()) {
+        if (e.key === 'Escape' || e.key === '?') setHelp(false);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        // Text still in an open editor isn't applied yet, so it doesn't download; the browser's own save never fits.
+        e.preventDefault();
+        if (!typing(e.target)) downloadNow.current();
+        return;
+      }
+      if (typing(e.target)) return;
       if (e.ctrlKey || e.metaKey) {
         const zoom = { '=': ZOOM_STEP, '+': ZOOM_STEP, '-': 1 / ZOOM_STEP }[e.key];
         if (zoom) s.setZoom(s.zoom * zoom);
@@ -407,7 +436,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
         e.preventDefault();
         s.setPage(order[e.key === 'Home' ? 0 : last]!);
       } else if (e.key === '?') {
-        setHelp((h) => !h);
+        setHelp(true);
       } else if (!s.tableSetup && !s.editingId && !s.editingCell) {
         const tool = ({ v: 'select', t: 'addText', b: 'table' } as const)[e.key.toLowerCase() as 'v' | 't' | 'b'];
         if (!tool || (tool === 'table' && isGridLocked(s.ops))) return;
@@ -469,6 +498,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
         {st.docId && (
           <>
             <span className="max-w-xs truncate font-medium">{st.fileName}</span>
+            {hasUnsaved(st) && <span data-testid="unsaved" title="Changes not downloaded yet" aria-label="Changes not downloaded yet" className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />}
             <div className="ml-4 flex items-center gap-1">
               <button className="rounded px-2 py-1 hover:bg-slate-100" onClick={() => st.setZoom(st.zoom / ZOOM_STEP)} title="Zoom out (Ctrl + −)">−</button>
               <span className="w-12 text-center tabular-nums">{Math.round(st.zoom * 100)}%</span>
@@ -480,9 +510,9 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
             <div className="ml-4 flex items-center gap-1" data-testid="tools">
               {(
                 [
-                  ['select', 'Select', 'Select, move, resize and edit (Delete removes the selection) — V'],
-                  ['addText', 'Add text', 'Click on the page to add a text box — T'],
-                  ['table', 'Table', 'B — Click a detected table or drag a rectangle around one, then align the mesh vertices to the cell corners and Confirm'],
+                  ['select', 'Select', 'Select, move, resize and edit (V)'],
+                  ['addText', 'Add text', 'Click on the page to add a text box (T)'],
+                  ['table', 'Table', 'Click a detected table or drag a rectangle around one, then align the mesh vertices to the cell corners and Confirm (B)'],
                 ] as const
               ).map(([t, label, title]) => (
                 <button
@@ -498,26 +528,26 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
               {st.tool === 'addText' && pdf && <FontPicker pdf={pdf} pages={st.pages} revision={st.revision} />}
             </div>
             <div className="ml-2 flex items-center gap-1">
-              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl+Z)">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.ops.length} onClick={() => void st.undo()} title="Undo (Ctrl + Z)">
                 ↶
               </button>
-              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl+Shift+Z)">
+              <button className="rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40" disabled={st.busy || !st.redoStack.length} onClick={() => void st.redo()} title="Redo (Ctrl + Shift + Z)">
                 ↷
               </button>
             </div>
             <button
               data-testid="arrange-pages"
               className="ml-auto rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40"
-              title="Reorder, rotate, delete or insert pages: opens the edited PDF in Merge & Pages (edits are kept, but can no longer be undone there)"
+              title="Combine with other PDFs: opens a copy of the edited PDF in Merge & Pages, where these edits can no longer be undone. To reorder, rotate, delete or add pages with undo, use the tools on the page thumbnails."
               disabled={downloading}
               onClick={() => void download((b, name) => onArrange(new File([b], name, { type: 'application/pdf' })), false)}
             >
-              Arrange pages
+              Open in Merge &amp; Pages
             </button>
             <button className="rounded px-2 py-1 text-slate-600 hover:bg-slate-100" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
               ?
             </button>
-            <button data-testid="download" className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60" disabled={downloading} onClick={() => void download(downloadBlob, true)}>
+            <button data-testid="download" title="Download the edited PDF (Ctrl + S)" className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60" disabled={downloading} onClick={() => void download(downloadBlob, true)}>
               Download
             </button>
           </>

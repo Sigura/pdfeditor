@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import * as pdfjs from 'pdfjs-dist';
 import { apiError, downloadBlob } from '../lib/api.ts';
-import { askPassword } from '../lib/Dialogs.tsx';
+import { askConfirm, askPassword } from '../lib/Dialogs.tsx';
 import { Thumbnail } from './Thumbnail.tsx';
 import { BLANK, toSegments, useMergeStore } from './store.ts';
 
@@ -98,7 +98,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           setDropActive(true);
         }
       }}
-      onDragLeave={() => setDropActive(false)}
+      onDragLeave={(e) => e.currentTarget === e.target && setDropActive(false)}
       onDrop={onFileDrop}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
@@ -133,7 +133,12 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
         >
           Edit result
         </button>
-        <button className="rounded px-3 py-1.5 text-sm hover:bg-slate-100" onClick={clear} disabled={busy}>
+        <button
+          data-testid="merge-clear"
+          className="rounded px-3 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
+          disabled={busy || !pages.length}
+          onClick={() => void askConfirm(`Clear the list? ${pages.length === 1 ? 'The page is' : `All ${pages.length} pages are`} removed, with their files.`, 'Clear').then((yes) => yes && clear())}
+        >
           Clear
         </button>
         <div className="ml-auto flex flex-wrap gap-2">
@@ -148,7 +153,14 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           ))}
         </div>
       </div>
-      {error && <div className="bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
+      {error && (
+        <div data-testid="merge-error" role="alert" className="flex items-start gap-2 bg-red-50 px-4 py-2 text-sm text-red-700">
+          <span className="flex-1">{error}</span>
+          <button aria-label="Dismiss" title="Dismiss" className="rounded px-1 leading-5 hover:bg-red-100" onClick={() => setError(null)}>
+            ×
+          </button>
+        </div>
+      )}
       <div className={`min-h-0 flex-1 overflow-auto p-6 ${dropActive ? 'bg-sky-50 outline-2 outline-dashed outline-sky-400' : ''}`}>
         {pages.length === 0 ? (
           <div className="flex h-full items-center justify-center text-slate-500">Drop PDF files here or click “Add PDFs”. Then reorder, rotate, delete or insert blank pages.</div>
@@ -208,7 +220,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     <button data-testid="page-blank" title="Insert a blank page after this one" aria-label="Insert blank page after" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => insertBlank(i)}>
                       +
                     </button>
-                    <button title="Remove page" aria-label="Remove page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
+                    <button title="Delete page" aria-label="Delete page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
                       ×
                     </button>
                   </div>
