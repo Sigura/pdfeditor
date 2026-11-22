@@ -844,3 +844,35 @@ test('merge: Add folder adds its PDFs and zips recursively in natural order of t
   expect(names).toEqual(['file02.pdf page 1', 'file02.pdf page 2', 'z3.pdf page 1', 'file10.pdf page 1', 'file1.pdf page 1']);
   await expect(page.getByTestId('merge-error')).toHaveCount(0);
 });
+
+test('Esc: leaves table setup (Step 1 and the mesh), returns to the Select tool, reverts an Inspector field', async ({ page }) => {
+  await open(page, 'table.pdf');
+  const tools = page.getByTestId('tools');
+  const active = () => tools.locator('button.bg-sky-600');
+  await tools.getByRole('button', { name: 'Table', exact: true }).click();
+  await page.getByTestId('table-setup-start').click();
+  await page.getByTestId('setup-cols').focus();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('setup-step1')).toHaveCount(0);
+  await expect(active()).toHaveText('Table');
+  await page.getByTestId('table-setup-start').click();
+  await page.getByTestId('setup-ok').click();
+  const vertex = page.getByTestId('setup-vertex').first();
+  await vertex.click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('setup-toolbar')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('setup-toolbar')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(active()).toHaveText('Select');
+  await expect(changes(page)).toHaveCount(0);
+
+  await page.getByTestId('text-box').first().click();
+  const x = page.getByTestId('insp-x');
+  const before = await x.inputValue();
+  await x.fill('123');
+  await x.press('Escape');
+  await expect(x).toHaveValue(before);
+  await expect(x).not.toBeFocused();
+  await expect(changes(page)).toHaveCount(0);
+});

@@ -48,7 +48,16 @@ function NumField({ label, value, onCommit, step = 0.5, min, testId }: { label: 
           setRejected(undefined);
         }}
         onBlur={commit}
-        onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          else if (e.key === 'Escape') {
+            setText(String(shown));
+            setRejected(undefined);
+            const input = e.currentTarget;
+            // Blur after the reset has rendered, so the commit sees the old value.
+            requestAnimationFrame(() => input.blur());
+          }
+        }}
       />
       {rejected && (
         <span role="status" data-testid="numfield-rejected" className="absolute top-full left-5 z-10 mt-0.5 rounded bg-red-600 px-1 text-[10px] whitespace-nowrap text-white">

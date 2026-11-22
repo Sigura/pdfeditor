@@ -309,7 +309,7 @@ const SHORTCUTS: [string, string][] = [
   ['Arrows (Shift: 10 pt)', 'Move the selection by 1 pt; in a table, go to the next cell'],
   ['Tab / Shift + Tab', 'Next / previous table cell'],
   ['Delete', 'Remove the selected box or table; clear the selected cell'],
-  ['Esc', 'Deselect; close this list'],
+  ['Esc', 'Deselect; back to the Select tool; leave the table setup; close this list'],
   ['Alt while dragging', 'Turn snapping off'],
   ['Violet handle', 'Click to select a whole table (arrows nudge it), drag to move it'],
   ['Ctrl + Enter / Esc', 'Apply / cancel text editing'],
@@ -503,6 +503,8 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
         s.setPage(order[e.key === 'Home' ? 0 : last]!);
       } else if (e.key === '?') {
         setHelp(true);
+      } else if (e.key === 'Escape') {
+        if (s.tool !== 'select' && !s.tableSetup && !s.selectedId && !s.cell) s.setTool('select');
       } else if (!s.tableSetup && !s.editingId && !s.editingCell) {
         const tool = ({ v: 'select', t: 'addText', b: 'table' } as const)[e.key.toLowerCase() as 'v' | 't' | 'b'];
         if (!tool || (tool === 'table' && isGridLocked(s.ops))) return;
