@@ -35,11 +35,60 @@ type MergeState = {
   clear: () => void;
   setBusy: (busy: boolean) => void;
   setError: (error: string | null) => void;
+  /** Keys of the selected pages, in page order; `anchor` is where a Shift+click range starts. */
+  selected: string[];
+  anchor: string | null;
+  /** only: just this page; toggle: add or remove it (Ctrl+click); range: from the anchor to it (Shift+click). */
+  selectPage: (key: string, mode: 'only' | 'toggle' | 'range') => void;
+  selectAll: () => void;
+  clearSelection: () => void;
+  removePages: (keys: string[]) => void;
+  rotatePages: (keys: string[], by: number) => void;
+  /** Moves the pages `keys` as a block, keeping their order, to where the page at `to` is (after it when moving forward). */
+  movePages: (keys: string[], to: number) => void;
+};
+
+const turn = (rotate: number, by: number) => (((rotate + by) % 360) + 360) % 360;
+const inOrder = (pages: PageItem[], keys: Iterable<string>) => {
+  const set = new Set(keys);
+  return pages.filter((p) => set.has(p.key)).map((p) => p.key);
 };
 
 export const useMergeStore = create<MergeState>((set) => ({
   files: {},
   pages: [],
+  selected: [],
+  anchor: null,
+  selectPage: (key, mode) =>
+    set((s) => {
+      if (mode === 'toggle') return { selected: s.selected.includes(key) ? s.selected.filter((k) => k !== key) : inOrder(s.pages, [...s.selected, key]), anchor: key };
+      const a = s.pages.findIndex((p) => p.key === s.anchor);
+      const b = s.pages.findIndex((p) => p.key === key);
+      if (mode === 'range' && a >= 0 && b >= 0) return { selected: s.pages.slice(Math.min(a, b), Math.max(a, b) + 1).map((p) => p.key) };
+      return { selected: [key], anchor: key };
+    }),
+  selectAll: () => set((s) => ({ selected: s.pages.map((p) => p.key) })),
+  clearSelection: () => set({ selected: [], anchor: null }),
+  removePages: (keys) =>
+    set((s) => {
+      const gone = new Set(keys);
+      return { pages: s.pages.filter((p) => !gone.has(p.key)), selected: s.selected.filter((k) => !gone.has(k)), undoStack: pushUndo(s) };
+    }),
+  rotatePages: (keys, by) =>
+    set((s) => {
+      const on = new Set(keys);
+      return { pages: s.pages.map((p) => (on.has(p.key) && p.fileId !== BLANK ? { ...p, rotate: turn(p.rotate, by) } : p)), undoStack: pushUndo(s) };
+    }),
+  movePages: (keys, to) =>
+    set((s) => {
+      const moving = new Set(keys);
+      const first = s.pages.findIndex((p) => moving.has(p.key));
+      if (first < 0 || moving.has(s.pages[to]?.key ?? '')) return s;
+      const rest = s.pages.filter((p) => !moving.has(p.key));
+      const at = s.pages.slice(0, first < to ? to + 1 : to).filter((p) => !moving.has(p.key)).length;
+      const pages = [...rest.slice(0, at), ...s.pages.filter((p) => moving.has(p.key)), ...rest.slice(at)];
+      return pages.every((p, i) => p === s.pages[i]) ? s : { pages, undoStack: pushUndo(s) };
+    }),
   busy: false,
   error: null,
   incoming: [],
@@ -58,8 +107,8 @@ export const useMergeStore = create<MergeState>((set) => ({
       pages.splice(to, 0, item);
       return { pages, undoStack: pushUndo(s) };
     }),
-  removePage: (key) => set((s) => ({ pages: s.pages.filter((p) => p.key !== key), undoStack: pushUndo(s) })),
-  rotatePage: (key, by = 90) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: (((p.rotate + by) % 360) + 360) % 360 } : p)), undoStack: pushUndo(s) })),
+  removePage: (key) => set((s) => ({ pages: s.pages.filter((p) => p.key !== key), selected: s.selected.filter((k) => k !== key), undoStack: pushUndo(s) })),
+  rotatePage: (key, by = 90) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: turn(p.rotate, by) } : p)), undoStack: pushUndo(s) })),
   insertBlank: (index) =>
     set((s) => {
       const pages = s.pages.slice();
@@ -80,18 +129,18 @@ export const useMergeStore = create<MergeState>((set) => ({
     set((s) => {
       const files = { ...s.files };
       delete files[fileId];
-      return { files, pages: s.pages.filter((p) => p.fileId !== fileId), undoStack: pushUndo(s) };
+      return { files, pages: s.pages.filter((p) => p.fileId !== fileId), selected: s.selected.filter((k) => s.pages.find((p) => p.key === k)?.fileId !== fileId), undoStack: pushUndo(s) };
     });
   },
   undoStack: [],
   undo: () =>
     set((s) => {
       const last = s.undoStack.at(-1);
-      return last ? { ...last, undoStack: s.undoStack.slice(0, -1) } : s;
+      return last ? { ...last, selected: [], anchor: null, undoStack: s.undoStack.slice(0, -1) } : s;
     }),
   clear: () => {
     releasePdfDocs();
-    set({ files: {}, pages: [], error: null, undoStack: [] });
+    set({ files: {}, pages: [], error: null, undoStack: [], selected: [], anchor: null });
   },
   setBusy: (busy) => set({ busy }),
   setError: (error) => set({ error }),

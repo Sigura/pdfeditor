@@ -33,7 +33,7 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
 }
 
 export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
-  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, undoStack, undo, clear, setBusy, setError } = useMergeStore();
+  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, undoStack, undo, clear, setBusy, setError, selected, selectPage, clearSelection, removePages, rotatePages, movePages } = useMergeStore();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -88,9 +88,18 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey || modalOpen() || t.closest('input, textarea, [contenteditable="true"]')) return;
-      e.preventDefault();
-      useMergeStore.getState().undo();
+      if (modalOpen() || t.closest('input, textarea, [contenteditable="true"]')) return;
+      const s = useMergeStore.getState();
+      if (e.key === 'Escape' && s.selected.length) return s.clearSelection();
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z') {
+        e.preventDefault();
+        s.undo();
+      } else if (key === 'a' && s.pages.length) {
+        e.preventDefault();
+        s.selectAll();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -227,6 +236,24 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           ))}
         </div>
       </div>
+      {selected.length > 0 && (
+        <div data-testid="merge-selection" className="flex flex-wrap items-center gap-2 border-b border-sky-200 bg-sky-50 px-4 py-1.5 text-sm text-sky-900">
+          <span className="font-medium">{selected.length} selected</span>
+          <button className="rounded px-2 py-0.5 hover:bg-sky-100 disabled:opacity-40" disabled={busy} title="Rotate the selected pages 90° clockwise (R)" onClick={() => rotatePages(selected, 90)}>
+            ↻ Rotate
+          </button>
+          <button className="rounded px-2 py-0.5 hover:bg-sky-100 disabled:opacity-40" disabled={busy} title="Rotate the selected pages 90° counter-clockwise (Shift+R)" onClick={() => rotatePages(selected, -90)}>
+            ↺ Rotate back
+          </button>
+          <button data-testid="selection-delete" className="rounded px-2 py-0.5 hover:bg-red-100 hover:text-red-700 disabled:opacity-40" disabled={busy} title="Delete the selected pages (Delete; Ctrl+Z brings them back)" onClick={() => removePages(selected)}>
+            Delete
+          </button>
+          <span className="text-xs text-sky-700">Drag one of them to move them all.</span>
+          <button className="ml-auto rounded px-2 py-0.5 hover:bg-sky-100" title="Clear the selection (Esc)" onClick={clearSelection}>
+            Clear selection
+          </button>
+        </div>
+      )}
       {error && (
         <div data-testid="merge-error" role="alert" className="flex items-start gap-2 bg-red-50 px-4 py-2 text-sm text-red-700">
           <span className="flex-1 whitespace-pre-line">{error}</span>
@@ -243,13 +270,21 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
             {pages.map((p, i) => {
               const file = files[p.fileId];
               const color = file ? COLORS[fileIds.indexOf(p.fileId) % COLORS.length] : 'bg-slate-300';
+              const isSel = selected.includes(p.key);
+              // Keys act on the whole selection when the focused page is part of it.
+              const targets = isSel ? selected : [p.key];
+              const dragging = dragIndex !== null && (dragIndex === i || (isSel && selected.includes(pages[dragIndex]?.key ?? '')));
               return (
                 <li
                   key={p.key}
                   draggable
                   tabIndex={0}
                   data-key={p.key}
-                  aria-label={`${file ? `${file.name} page ${p.pageIndex + 1}` : 'Blank page'}, position ${i + 1} of ${pages.length}. Alt+arrows move it, R rotates it, Delete removes it`}
+                  aria-label={`${file ? `${file.name} page ${p.pageIndex + 1}` : 'Blank page'}, position ${i + 1} of ${pages.length}${isSel ? ', selected' : ''}. Space selects, Alt+arrows move it, R rotates, Delete removes`}
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest('button')) return;
+                    selectPage(p.key, e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'only');
+                  }}
                   onKeyDown={(e) => {
                     if (e.target !== e.currentTarget) return;
                     const step = e.altKey ? { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key] : undefined;
@@ -259,13 +294,17 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                       if (to < 0 || to >= pages.length) return;
                       movePage(i, to);
                       requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-key="${CSS.escape(p.key)}"]`)?.focus());
-                    } else if (e.key.toLowerCase() === 'r' && file && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    } else if (e.key === ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
                       e.preventDefault();
-                      rotatePage(p.key, e.shiftKey ? -90 : 90);
+                      selectPage(p.key, e.shiftKey ? 'range' : 'toggle');
+                    } else if (e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                      e.preventDefault();
+                      rotatePages(targets, e.shiftKey ? -90 : 90);
                     } else if (e.key === 'Delete') {
                       e.preventDefault();
-                      const next = pages[i + 1] ?? pages[i - 1];
-                      removePage(p.key);
+                      const next = pages.slice(i + 1).find((q) => !targets.includes(q.key)) ?? pages.slice(0, i).findLast((q) => !targets.includes(q.key));
+                      if (targets.length > 1) removePages(targets);
+                      else removePage(p.key);
                       if (next) requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-key="${CSS.escape(next.key)}"]`)?.focus());
                     }
                   }}
@@ -285,7 +324,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     if (dragIndex === null) return;
                     e.preventDefault();
                     e.stopPropagation();
-                    movePage(dragIndex, i);
+                    const dragged = pages[dragIndex];
+                    if (dragged && selected.includes(dragged.key) && selected.length > 1) movePages(selected, i);
+                    else movePage(dragIndex, i);
                     setDragIndex(null);
                     setOverIndex(null);
                   }}
@@ -293,7 +334,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     setDragIndex(null);
                     setOverIndex(null);
                   }}
-                  className={`group relative cursor-grab rounded p-1 focus-visible:outline-2 focus-visible:outline-sky-500 ${overIndex === i && dragIndex !== i ? 'ring-2 ring-sky-500' : ''} ${dragIndex === i ? 'opacity-40' : ''}`}
+                  className={`group relative cursor-grab rounded p-1 focus-visible:outline-2 focus-visible:outline-sky-500 ${overIndex === i && !dragging ? 'ring-2 ring-sky-500' : ''} ${isSel ? 'bg-sky-100 ring-2 ring-sky-600' : ''} ${dragging ? 'opacity-40' : ''}`}
                 >
                   {file ? (
                     <Thumbnail file={file} pageIndex={p.pageIndex} rotate={p.rotate} />

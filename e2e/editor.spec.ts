@@ -1059,3 +1059,31 @@ test('page labels show on thumbnails, in the page box and in Merge; the download
   await page.getByTestId('merge-input').setInputFiles(fixture('labelled.pdf'));
   await expect(page.getByTestId('merge-page').nth(2)).toContainText('p.3 · A-1');
 });
+
+test('merge: Shift/Ctrl+click select pages; R, Delete and drag act on the whole selection; Ctrl+A and Esc', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([fixture('labelled.pdf'), fixture('table.pdf')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(5);
+  const names = () => items.evaluateAll((els) => els.map((e) => e.querySelector('.ml-auto')?.textContent?.split(' ·')[0] ?? ''));
+  await items.nth(0).click({ position: { x: 20, y: 60 } });
+  await items.nth(2).click({ position: { x: 20, y: 60 }, modifiers: ['Shift'] });
+  await expect(page.getByTestId('merge-selection')).toContainText('3 selected');
+  await items.nth(1).focus();
+  await page.keyboard.press('r');
+  for (const k of [0, 1, 2]) await expect(items.nth(k)).toContainText('↻ 90°');
+  await expect(items.nth(3)).not.toContainText('↻ 90°');
+  await items.nth(1).click({ position: { x: 20, y: 60 }, modifiers: ['Control'] });
+  await expect(page.getByTestId('merge-selection')).toContainText('2 selected');
+  await items.nth(0).dragTo(items.nth(4));
+  expect(await names()).toEqual(['p.2', 'p.4', 'p.1', 'p.1', 'p.3']);
+  await page.getByTestId('selection-delete').click();
+  await expect(items).toHaveCount(3);
+  await page.keyboard.press('Control+z');
+  await expect(items).toHaveCount(5);
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press('Control+a');
+  await expect(page.getByTestId('merge-selection')).toContainText('5 selected');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('merge-selection')).toHaveCount(0);
+});
