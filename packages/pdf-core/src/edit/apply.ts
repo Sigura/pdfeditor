@@ -17,7 +17,7 @@ import { backgroundFill, colorOp, num, shiftRect, translateIn, union } from './o
 import { tableDrawer } from './tableDraw.ts';
 import { writeStoredTables } from '../model/pieceInfo.ts';
 import { headerRowsOf } from '../model/tablePattern.ts';
-import { flowModels, planFlow, writeFlow, type FlowPage, type FlowUnit } from './paging.ts';
+import { flowModels, planFlow, tableTop, writeFlow, type FlowPage, type FlowUnit, type TableTop } from './paging.ts';
 
 export type ApplyResult = {
   bytes: Uint8Array;
@@ -484,12 +484,15 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
     const pageNumber = (b: TextBox) => (PAGE_NUMBER.test(b.text.trim()) ? { pageNumber: { text: b.text.trim(), x0: b.bbox.x0, x1: b.bbox.x1 } } : {});
     const units: FlowUnit[] = page.textBoxes.map((b) => (origBoxes.has(b.id) ? unit(b.bbox, reflowDy(origBoxes.get(b.id)!), pageNumber(b)) : span(b.bbox)));
     const headers: Record<string, { y0: number; y1: number }> = {};
+    const tops: Record<string, TableTop> = {};
     for (const t of page.tables) {
       const ob = origTables.get(t.id);
       const rows = [...t.rows.map((r) => ({ ...span(r), row: r.index })), ...t.cells.filter((c) => (c.rowSpan ?? 1) > 1).map((c) => ({ ...span(c.bbox), row: c.row }))];
       for (const r of rows) units.push({ ...r, table: true, tableId: t.id, ...(ob && { orig: span(ob) }), ...((!ob || r.y0 < ob.y0 - 0.01 || reflowDy(ob)) && { pushed: true }) });
       const hr = headerRowsOf(t);
       if (hr > 0 && t.rows.length > hr) headers[t.id] = { y0: t.rows[hr - 1]!.y0, y1: t.rows[0]!.y1 };
+      const top = tableTop(t);
+      if (top) tops[t.id] = top;
     }
     const tablePaths = new Set(a.tables.flatMap((t) => t.paths));
     const cellImages = new Set(a.tables.flatMap((t) => [...t.cellImages.values()].flat()));
@@ -510,7 +513,7 @@ export async function applyEdits(original: Uint8Array, ops: EditOperation[], opt
       const dy = reflowDy(l);
       units.push(unit({ y0: l.y0 + dy, y1: l.y1 + dy }, dy));
     }
-    return { view: page.view, units, headers, ...(layout && { paper: layout.paper }) };
+    return { view: page.view, units, headers, tops, ...(layout && { paper: layout.paper }) };
   });
   const flowOpts = { repeat: new Set([...continuation].flatMap(([id, yes]) => (yes ? [id] : []))), pageNumbers: flowOp?.pageNumbers };
   const plan = planFlow(flowPages, pageFlow, flowOpts);

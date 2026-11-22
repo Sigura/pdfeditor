@@ -130,13 +130,20 @@ tables right below a table whose bottom edge changed; paths and images there get
   tiled along their length from the longest clean piece of an original edge of the same role (vertical
   pieces also by header/body side); junction squares cut from an original junction of the same type and
   line roles (snapped vertices first). Runs break at junctions and neighbouring pieces overlap by 0.5 pt,
-  so antialiased clip edges leave no seams. A cell set with `setCellText` (even to empty) is painted with
+  so antialiased clip edges leave no seams. Each piece is drawn from its own image XObject cut from the
+  scan's samples (`edit/imageCrop.ts`: pixel-aligned, 8-px-aligned with a 4 px margin, same colour space,
+  decode and mask, cached per source area), placed on the scan's own pixel grid; drawing the whole scan
+  under each clip made pdf.js paint it ~140 times per page (seconds). Scans whose filter pdf-lib can't
+  decode (DCT, JPX, CCITT, JBIG2) or that are rotated are still drawn whole under the clip. A cell set with `setCellText` (even to empty) is painted with
   its background colour and gets new text (vector: a page font if it has the glyphs, else a substitute)
   in the ink colour, at the largest `inkFontSize` of the column (shared/tableMesh.ts: max of ascent ÷ 0.75
   and line ÷ 0.95, measured on real glyphs). At Confirm the editor also measures each cell's ink box inside
   the crop band (`raster.inkBoxes`: the tallest inked pixel-row run as `line`, its top to its baseline, the
   last row with ≥ 40 % of the busiest row's ink, as `ascent`); it becomes the cell `minSize` measured from
   the top-left corner (crops are anchored there), enforced like image cells until the cell is rewritten.
+  After a structural edit the model's (and /PieceInfo's) ink boxes follow their cells into the new grid
+  (rewritten and new cells have none), so the editor's size estimate (column, same side of the header)
+  and a reopened file match the drawing.
   `tableInsertCol` with `fit: 'shrink'` keeps such columns at their minimum and narrows the others more.
 - New text with no style box to copy, or with a font or size set by `setCellText`, is laid out first
   (`placeNew` in measure mode) and grows its row like other cells. A cell `background` repaints the fill;
@@ -166,7 +173,10 @@ tables right below a table whose bottom edge changed; paths and images there get
   op answers it; past the last page a trial flow onto empty pages finds the cut, so the new-page prompt
   asks it too. With `repeatHeader`, every continued part starts with a band of the table's header rows
   drawn from its page, and its rows move down by that height; the continuation's model gets the header
-  rows. A header/footer text box that reads like a page number ("Page 2", "2 of 5") is reported as the
+  rows. Without it, the continued part starts with the table's top edge: a band around the top line of
+  the source table (`tableTop`: the widest of the top/row strokes, or the scan border band), clipped to
+  the table's width, drawn over the first row, whose own row line is clipped away. Header rows never end a
+  page: when the row under them doesn't fit, they go to the next page with it (the table isn't cut there). A header/footer text box that reads like a page number ("Page 2", "2 of 5") is reported as the
   `pageNumber` of a `needsPage` overflow; `setPageFlow.pageNumbers: 'omit'` removes its runs from the
   copied bands. Scanned pages have no text, so the page-number question doesn't apply there.
 

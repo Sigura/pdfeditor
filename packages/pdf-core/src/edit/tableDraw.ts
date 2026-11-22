@@ -1,5 +1,5 @@
 import { cellAnchor, inkFontSize, edgeRole, meshEdges, type BorderStroke, type Color, type EdgeRole, type Matrix, type PageModel, type Rect, type StrategyReport, type Table, type TablePattern, type TextBox } from '@pdf-toolkit/shared';
-import { PDFDict, PDFName, type PDFDocument } from 'pdf-lib';
+import { PDFDict, PDFName, type PDFDocument, type PDFRef } from 'pdf-lib';
 import { invert } from '../math.ts';
 import type { BoxInternal } from '../model/group.ts';
 import type { StreamPatch } from '../content/parser.ts';
@@ -9,6 +9,7 @@ import type { TableInternal } from '../model/tables.ts';
 import { headerRowsOf, roleStrokes, zebraRows } from '../model/tablePattern.ts';
 import { layoutBox, originalEncoding, type BoxLayout, type LayoutStyle } from './layout.ts';
 import { cellMinSize, tableBounds, type AddedBox, type TableEdit } from './reduce.ts';
+import { imageCropper } from './imageCrop.ts';
 import { rasterTableContent, type RasterGrid, type RasterInput } from './raster.ts';
 import { colorOp, num, shiftRect, union } from './ops.ts';
 
@@ -328,7 +329,10 @@ export function tableDrawer(ctx: TableDrawContext) {
   const pageImageKey = (a: PageAnalysis, im: ImageItem): string | null => {
     const info = a.interp.streams.get(`page:${a.pageIndex}`)!;
     if (im.streamId === info.id && im.name) return im.name;
-    if (!im.ref) return null;
+    return im.ref ? pageXObjectKey(a, im.ref) : null;
+  };
+  const pageXObjectKey = (a: PageAnalysis, ref: PDFRef): string => {
+    const info = a.interp.streams.get(`page:${a.pageIndex}`)!;
     const ctx = doc.context;
     if (!info.resources) {
       info.resources = ctx.obj({});
@@ -340,11 +344,11 @@ export function tableDrawer(ctx: TableDrawContext) {
       info.resources.set(PDFName.of('XObject'), xo);
     }
     const dict = xo as PDFDict;
-    const known = [...dict.entries()].find(([, v]) => v === im.ref);
+    const known = [...dict.entries()].find(([, v]) => v === ref);
     if (known) return known[0].decodeText();
     let n = 1;
     while (dict.has(PDFName.of(`TKIm${n}`))) n++;
-    dict.set(PDFName.of(`TKIm${n}`), im.ref);
+    dict.set(PDFName.of(`TKIm${n}`), ref);
     return `TKIm${n}`;
   };
   /** The scan under a raster table (the topmost image covering it) and its grid, or null with a warning. */
@@ -365,7 +369,14 @@ export function tableDrawer(ctx: TableDrawContext) {
       headerRows: setup.headerRows,
       snapped: setup.vertices.map((row) => row.map((v) => v.snapped)),
     };
-    return { image: { ctm: im.ctm, key, bbox: im.bbox }, orig: grid, look: setup.raster, borderWidth: setup.borderWidth };
+    const cropper = im.ref && imageCropper(doc.context, im.ref, im.ctm);
+    const crop = cropper
+      ? (src: Rect) => {
+          const piece = cropper(src);
+          return piece && { key: pageXObjectKey(a, piece.ref), ctm: piece.ctm };
+        }
+      : undefined;
+    return { image: { ctm: im.ctm, key, bbox: im.bbox, ...(crop && { crop }) }, orig: grid, look: setup.raster, borderWidth: setup.borderWidth };
   };
 
   const draw = async (tables: Iterable<TableEdit>) => {
@@ -467,13 +478,23 @@ export function tableDrawer(ctx: TableDrawContext) {
       }
       for (const [key, box] of ti.cellBoxes) if (!placedKeys.has(key)) remove(a, box.runs);
       for (const [key, list] of ti.cellImages) if (!placedKeys.has(key)) list.forEach(dropImage);
+      // Ink boxes follow their cells into the new grid (crops are top-left anchored); rewritten and new cells have none.
+      const look = orig.setup?.origin === 'raster' ? orig.setup.raster : undefined;
+      const inkBoxes = look?.inkBoxes && te.cells.map((row, r) =>
+        row.map((cell, c) => {
+          const b = cell.src && !cell.edited ? look.inkBoxes![cell.src.row]?.[cell.src.col] : undefined;
+          const nb = newCells.find((n) => n.row === r && n.col === c)!.bbox;
+          const ob = b && origCell(`${cell.src!.row},${cell.src!.col}`).bbox;
+          return b && ob ? { ...b, ...shiftRect(b, nb.x0 - ob.x0, nb.y1 - ob.y1) } : null;
+        }),
+      );
       page.tables[tIdx] = {
         ...orig,
         bbox: { x0: xs[0]!, y0: ys[ys.length - 1]!, x1: xs[xs.length - 1]!, y1: ys[0]! },
         rows: ys.slice(0, -1).map((y, i) => ({ index: i, y0: ys[i + 1]!, y1: y })),
         cols: xs.slice(0, -1).map((x, i) => ({ index: i, x0: x, x1: xs[i + 1]! })),
         cells: newCells,
-        ...(orig.setup && { setup: { ...orig.setup, vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), spans: te.spans, headerRows: te.headerRows } }),
+        ...(orig.setup && { setup: { ...orig.setup, vertices: ys.map((y) => xs.map((x) => ({ x, y, snapped: true }))), spans: te.spans, headerRows: te.headerRows, ...(look && inkBoxes && { raster: { ...look, inkBoxes } }) } }),
         ...(orig.pattern && { pattern: { ...orig.pattern, zebra: te.zebra } }),
       };
     }

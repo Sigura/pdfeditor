@@ -410,7 +410,8 @@ async function pagedTable() {
     ];
     data.forEach((row, r) => row.forEach((cell, c) => page.drawText(cell, { x: cols[c]! + 6, y: top - (r + 1) * rowH + 8, size: 11, font: r === 0 ? bold : helv })));
     const border = { thickness: 0.8, color: rgb(0.3, 0.3, 0.3) };
-    for (let r = 0; r <= data.length; r++) page.drawLine({ start: { x: cols[0]!, y: top - r * rowH }, end: { x: right, y: top - r * rowH }, ...border });
+    const outer = { thickness: 2, color: rgb(0, 0, 0) };
+    for (let r = 0; r <= data.length; r++) page.drawLine({ start: { x: cols[0]!, y: top - r * rowH }, end: { x: right, y: top - r * rowH }, ...(r === 0 || r === data.length ? outer : border) });
     for (const x of [...cols, right]) page.drawLine({ start: { x, y: top }, end: { x, y: top - data.length * rowH }, ...border });
     page.drawText('Line under the table.', { x: 60, y: 100, size: 12, font: helv });
   }

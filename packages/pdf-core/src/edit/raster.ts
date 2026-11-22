@@ -7,8 +7,11 @@ export type RasterGrid = { ys: number[]; xs: number[]; spans: CellSpan[]; header
 export type RasterCell = { r: number; c: number; src?: { row: number; col: number }; blank: boolean; fill?: Color | null };
 
 export type RasterInput = {
-  /** The scan: its CTM at the Do and its resource name in the page resources. */
-  image: { ctm: Matrix; key: string; bbox: Rect };
+  /**
+   * The scan: its CTM at the Do and its resource name in the page resources. `crop`: a piece of the
+   * scan holding the area `src` (resource name and CTM); null = draw the whole scan under the clip.
+   */
+  image: { ctm: Matrix; key: string; bbox: Rect; crop?: (src: Rect) => { key: string; ctm: Matrix } | null };
   orig: RasterGrid;
   /** `null`: the table was deleted. */
   next: RasterGrid | null;
@@ -46,7 +49,11 @@ export function rasterTableContent(o: RasterInput): string {
   const { image, orig, next, look } = o;
   // Half the band: the border plus a margin for the blur of a scanned line.
   const e = o.borderWidth / 2 + Math.max(1, o.borderWidth / 2);
-  const draw = (clip: Rect, dx: number, dy: number) => `q ${rectOp(clip)} W n 1 0 0 1 ${num(dx)} ${num(dy)} cm ${image.ctm.map(num).join(' ')} cm /${image.key} Do Q`;
+  /** The scan's area `src` (default: under the clip) shifted by dx, dy and clipped. */
+  const draw = (clip: Rect, dx: number, dy: number, src: Rect = { x0: clip.x0 - dx, y0: clip.y0 - dy, x1: clip.x1 - dx, y1: clip.y1 - dy }) => {
+    const piece = image.crop?.(src) ?? image;
+    return `q ${rectOp(clip)} W n 1 0 0 1 ${num(dx)} ${num(dy)} cm ${piece.ctm.map(num).join(' ')} cm /${piece.key} Do Q`;
+  };
   const out: string[] = ['q'];
   const origBox = inset(cellRect(orig, { row: 0, col: 0, rowSpan: orig.ys.length - 1, colSpan: orig.xs.length - 1 }), -e);
   const covers = [origBox];
@@ -106,8 +113,9 @@ export function rasterTableContent(o: RasterInput): string {
     const len = p.b - p.a - OV;
     for (let s = from; s < to - 1e-6; s += len) {
       const t = Math.min(s + len + OV, to);
-      if (dir === 'h') out.push(draw({ x0: s, x1: t, y0: at - e, y1: at + e }, s - p.a, at - p.line));
-      else out.push(draw({ x0: at - e, x1: at + e, y0: s, y1: t }, at - p.line, s - p.a));
+      // The whole piece is the source, so every tile of a line shares one crop.
+      if (dir === 'h') out.push(draw({ x0: s, x1: t, y0: at - e, y1: at + e }, s - p.a, at - p.line, { x0: p.a, x1: p.b, y0: p.line - e, y1: p.line + e }));
+      else out.push(draw({ x0: at - e, x1: at + e, y0: s, y1: t }, at - p.line, s - p.a, { x0: p.line - e, x1: p.line + e, y0: p.a, y1: p.b }));
     }
   };
 

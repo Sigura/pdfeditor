@@ -4,10 +4,11 @@ import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { applyEdits } from '../src/edit/apply.ts';
+import { planFlow, type FlowPage } from '../src/edit/paging.ts';
 import { configureFonts } from '../src/fonts/lookup.ts';
 import { loadPdf } from '../src/load.ts';
 import { analyzeDocument, pageContentBytes } from '../src/model/extract.ts';
-import { PDFDict, PDFName, PDFRef } from 'pdf-lib';
+import { PDFDict, PDFName, PDFNumber, PDFRef, PDFStream } from 'pdf-lib';
 import { INK_ASCENT_EM, edgeRole, junctionType, meshEdges, type Mesh, type Table } from '@pdf-toolkit/shared';
 import { rasterDiff, rasterize } from './helpers.ts';
 
@@ -569,9 +570,9 @@ describe('cell layout, row growth and images (image-table.pdf)', () => {
 });
 
 /** Page rendered by pdf.js at `scale` px/pt, as grey levels; `at(x, y)` reads the pixel at user-space point (x, y). */
-async function renderGray(bytes: Uint8Array, scale: number) {
+async function renderGray(bytes: Uint8Array, scale: number, pageIndex = 0) {
   const doc = await getDocument({ data: new Uint8Array(bytes), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
-  const page = await doc.getPage(1);
+  const page = await doc.getPage(pageIndex + 1);
   const vp = page.getViewport({ scale });
   type Ctx = { getImageData(x: number, y: number, w: number, h: number): { data: Uint8ClampedArray } };
   const { canvas, context } = (doc.canvasFactory as { create(w: number, h: number): { canvas: unknown; context: Ctx } }).create(vp.width, vp.height);
@@ -657,6 +658,20 @@ describe('scanned tables (scanned-table.pdf)', () => {
     expect(same(60, 380, 540, 548, -52)).toBeLessThanOrEqual(2);
     // Above the table nothing changes.
     expect(same(60, 735, 400, 750, 0)).toBeLessThanOrEqual(2);
+    // The redraw paints small pieces cut from the scan (a viewer would otherwise paint the whole scan
+    // under every clip, seconds per page); only the original draw paints the whole scan, and only the
+    // strip below the table is a large piece.
+    const { doc } = await loadPdf(res.bytes);
+    const xobjects = doc.getPage(0).node.Resources()!.lookup(PDFName.of('XObject'), PDFDict);
+    const sizeOf = (name: string) => {
+      const d = xobjects.lookup(PDFName.of(name), PDFStream).dict;
+      return d.lookup(PDFName.of('Width'), PDFNumber).asNumber() * d.lookup(PDFName.of('Height'), PDFNumber).asNumber();
+    };
+    const painted = [...new TextDecoder().decode(pageContentBytes(doc.getPage(0))).matchAll(/\/(\w+) Do/g)].map((m) => sizeOf(m[1]!));
+    const scan = Math.max(...painted);
+    expect(painted.length).toBeGreaterThan(30);
+    expect(painted.filter((n) => n === scan)).toHaveLength(1);
+    expect(painted.filter((n) => n < scan && n >= scan / 10)).toHaveLength(1);
     // Inserted rows are blank paper inside their borders.
     for (const r of [1, 6]) {
       let ink = 255;
@@ -690,6 +705,13 @@ describe('scanned tables (scanned-table.pdf)', () => {
     // At least three wrapped lines at 1.2 × the estimated size: more than the original 26 pt.
     expect(hs[1]).toBeGreaterThan(3 * 1.2 * size);
     expect(hs.filter((_, i) => i !== 1)).toEqual([30, 26, 26, 26, 26]);
+    // The model's ink boxes follow their cells into the new grid (the editor's size estimate and a reopened file read them by row).
+    const moved = t.setup!.raster!.inkBoxes!;
+    expect(moved).toHaveLength(6);
+    expect(moved[0]).toEqual(inkBoxes[0]);
+    expect(moved[1]!.every((b) => b === null)).toBe(true);
+    expect(moved[2]![0]!.y1 - t.rows[2]!.y1).toBeCloseTo(inkBoxes[1]![0]!.y1 - ys[1]!, 6);
+    expect(moved[5]![3]!.y0 - t.rows[5]!.y0).toBeCloseTo(inkBoxes[4]![3]!.y0 - ys[5]!, 6);
     const row = t.rows[1]!;
     const items = (await pdfjsItems(res.bytes)).filter((i) => long.includes(i.str.trim()) && i.str.trim().length > 1);
     expect(items.length).toBeGreaterThanOrEqual(3);
@@ -842,6 +864,42 @@ describe('table paging (paged-table.pdf)', () => {
       expect(yItem).toBeLessThan(piece.rows[0]!.y1);
     }
     expect(yes.pages.reduce((n, p) => n + p.tables[0]!.rows.length, 0)).toBe(t.rows.length + 60 + 3);
+
+    // Without the header, a continued part starts with the table's top edge (2 pt black), not the row line it had (0.8 pt grey).
+    const S = 4;
+    const dark = (img: Awaited<ReturnType<typeof renderGray>>, y: number) => {
+      let n = 0;
+      for (let v = y - 3; v < y + 3; v += 1 / S) if (img.at(140, v) < 40) n++;
+      return n;
+    };
+    const [orig0, no1, no2] = await Promise.all([renderGray(original, S, 0), renderGray(no.bytes, S, 1), renderGray(no.bytes, S, 2)]);
+    const edge = dark(orig0, t.rows[0]!.y1);
+    expect(edge).toBeGreaterThanOrEqual(7);
+    expect(dark(orig0, t.rows[1]!.y1)).toBe(0);
+    for (const [k, img] of [[1, no1], [2, no2]] as const) {
+      const top = no.pages[k]!.tables.find((x) => x.id === t.id)!.rows[0]!.y1;
+      expect(Math.abs(dark(img, top) - edge), `page ${k + 1}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('a header row that would end a page goes to the next page with the rows under it', () => {
+    const view = { x0: 0, y0: 0, x1: 595, y1: 842 };
+    const row = (n: number, y0: number, oy0: number) => ({ y0, y1: y0 + 20, orig: { y0: oy0, y1: oy0 + 20 }, table: true, pushed: true, tableId: 't', row: n });
+    const text = (y0: number) => ({ y0, y1: y0 + 20, orig: { y0, y1: y0 + 20 } });
+    // The table grew above, so its header row (72..92) still fits over the body bottom (70) but its first row doesn't.
+    const pages: FlowPage[] = [
+      { view, units: [text(740), row(0, 72, 110), row(1, 52, 90), row(2, 32, 70)], headers: { t: { y0: 72, y1: 92 } } },
+      { view, units: [text(740), text(400)] },
+    ];
+    const plan = planFlow(pages, undefined);
+    expect(plan.splits).toEqual([]);
+    const p0 = plan.pages[0]!.draws.filter((d) => d.src === 0 && d.dy === 0);
+    expect(Math.min(...p0.map((d) => d.y0))).toBeGreaterThan(92);
+    const header = plan.pages[1]!.draws.find((d) => d.src === 0 && d.y0 <= 72 && d.y1 >= 92)!;
+    expect(header.dy).toBeCloseTo(760 - 92, 6);
+    // Unchanged when the first row fits under the header too: the table is cut below it.
+    const fits = planFlow([{ ...pages[0]!, units: [text(740), row(0, 92, 130), row(1, 72, 110), row(2, 52, 90)], headers: { t: { y0: 92, y1: 112 } } }, pages[1]!], undefined);
+    expect(fits.splits).toEqual([{ tableId: 't', pageIndex: 1 }]);
   });
 
   it('a copied page-number footer is reported with the overflow and is left out on copy pages when asked', async () => {

@@ -48,11 +48,12 @@ type CellStyle = { fontFamily?: string; fontSize?: number; color?: Color; backgr
 const BLACK: Color = { space: 'gray', values: [0] };
 const WHITE: Color = { space: 'gray', values: [1] };
 
-/** What the server uses for unset fields: the column style, or for a scanned cell the measured ink and a size from the tallest ink line (the server's estimate). */
+/** What the server uses for unset fields: the column style, or for a scanned cell the measured ink and a size from the tallest ink line of its column on its side of the header (the server's estimate). */
 function cellAuto(table: Table, c: Cell): { fontFamily: string; fontSize?: number; color: Color; background: Color | null } {
   const look = table.setup?.origin === 'raster' ? table.setup.raster : undefined;
   const boxes = look?.inkBoxes ?? [];
-  const inCol = boxes.flatMap((row) => (row[c.col] ? [inkFontSize(row[c.col]!)] : []));
+  const hr = table.setup?.headerRows ?? 0;
+  const inCol = boxes.flatMap((row, r) => (row[c.col] && r < hr === c.row < hr ? [inkFontSize(row[c.col]!)] : []));
   const sizes = inCol.length ? inCol : boxes.flat().flatMap((b) => (b ? [inkFontSize(b)] : []));
   return {
     fontFamily: look ? 'Helvetica' : 'Column style',
