@@ -916,3 +916,45 @@ test('glyph buttons have names; tools, align and tabs expose their state', async
   await expect(page.getByRole('spinbutton', { name: 'Line spacing' })).toHaveCount(1);
   await expect(page.getByLabel('Text colour')).toHaveCount(1);
 });
+
+test('thumbnails: R / Shift+R rotate both ways, Delete removes the focused editor page and keeps the focus on a page', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  const items = page.getByTestId('merge-page');
+  await items.first().focus();
+  await page.keyboard.press('Shift+R');
+  await expect(items.first()).toContainText('↻ 270°');
+  await items.first().hover();
+  await items.first().getByTestId('page-rotate').click({ modifiers: ['Shift'] });
+  await expect(items.first()).toContainText('↻ 180°');
+
+  await open(page, 'paged-table.pdf');
+  const thumb = (n: number) => page.getByTestId('page-thumb').nth(n).locator('> button');
+  await thumb(0).focus();
+  await page.keyboard.press('r');
+  await expect(changes(page).last()).toHaveText(/Rotate page 1 to 90°/);
+  await thumb(0).focus();
+  await page.keyboard.press('Shift+R');
+  await expect(changes(page).last()).toHaveText(/Rotate page 1 to 0°/);
+  await thumb(0).focus();
+  await page.keyboard.press('Delete');
+  await expect(changes(page).last()).toHaveText(/Delete page 1/);
+  await expect(page.getByTestId('page-thumb')).toHaveCount(1);
+  await expect(thumb(0)).toBeFocused();
+});
+
+test('dropping several PDFs on the editor offers to combine them in Merge & Pages', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'Edit', exact: true }).click();
+  const files = [fixture('table.pdf'), fixture('latin-standard14.pdf')].map((f) => ({ name: path.basename(f), data: [...readFileSync(f)] }));
+  const dt = await page.evaluateHandle((list) => {
+    const d = new DataTransfer();
+    for (const f of list) d.items.add(new File([new Uint8Array(f.data)], f.name, { type: 'application/pdf' }));
+    return d;
+  }, files);
+  await page.getByTestId('editor-dropzone').dispatchEvent('drop', { dataTransfer: dt });
+  await expect(page.getByTestId('confirm-dialog')).toContainText('2 files dropped');
+  await page.getByTestId('dialog-ok').click();
+  await expect(page.getByRole('tab', { name: 'Merge & Pages' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('merge-page')).toHaveCount(3);
+});

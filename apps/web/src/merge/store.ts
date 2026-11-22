@@ -18,7 +18,8 @@ type MergeState = {
   addFile: (file: SourceFile) => void;
   movePage: (from: number, to: number) => void;
   removePage: (key: string) => void;
-  rotatePage: (key: string) => void;
+  /** Turns the page by `by` degrees, clockwise (default 90; -90 turns it back). */
+  rotatePage: (key: string, by?: number) => void;
   /** Adds a blank page after position `index` (-1: first). */
   insertBlank: (index: number) => void;
   /** Repeats the page right after itself. */
@@ -57,7 +58,7 @@ export const useMergeStore = create<MergeState>((set) => ({
       return { pages, undoStack: pushUndo(s) };
     }),
   removePage: (key) => set((s) => ({ pages: s.pages.filter((p) => p.key !== key), undoStack: pushUndo(s) })),
-  rotatePage: (key) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: (p.rotate + 90) % 360 } : p)), undoStack: pushUndo(s) })),
+  rotatePage: (key, by = 90) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: (((p.rotate + by) % 360) + 360) % 360 } : p)), undoStack: pushUndo(s) })),
   insertBlank: (index) =>
     set((s) => {
       const pages = s.pages.slice();

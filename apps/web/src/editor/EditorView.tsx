@@ -75,7 +75,7 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
   const commit = (pages: { page: number; rotate: number }[], blanks = arr?.blanks ?? []) =>
     st.edit([{ type: 'arrangePages', order: pages.map(({ page, rotate }) => (rotate ? { page, rotate: rotate as 0 | 90 | 180 | 270 } : { page })), blanks }]);
   const entries = () => shown.map((k) => ({ page: k, rotate: rotation(k) }));
-  const rotate = (k: number) => commit(entries().map((e) => (e.page === k ? { ...e, rotate: (e.rotate + 90) % 360 } : e)));
+  const rotate = (k: number, by = 90) => commit(entries().map((e) => (e.page === k ? { ...e, rotate: (((e.rotate + by) % 360) + 360) % 360 } : e)));
   const remove = (k: number) => commit(entries().filter((e) => e.page !== k));
   const insertBlank = (k: number) => {
     const m = st.pages[k]!;
@@ -128,10 +128,22 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
               setDragOver(k);
             }}
             onKeyDown={(e) => {
-              const step = own && e.altKey && !st.busy ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : undefined;
-              if (!step) return;
-              e.preventDefault();
-              void moveBy(k, step);
+              if (!own || st.busy || e.ctrlKey || e.metaKey) return;
+              const step = e.altKey ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : undefined;
+              if (step) {
+                e.preventDefault();
+                void moveBy(k, step);
+              } else if (e.key.toLowerCase() === 'r' && !e.altKey) {
+                e.preventDefault();
+                e.stopPropagation();
+                void rotate(k, e.shiftKey ? -90 : 90);
+              } else if (e.key === 'Delete' && !e.altKey && shown.length > 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                const at = shown.indexOf(k);
+                const next = shown[at + 1] ?? shown[at - 1];
+                void remove(k).then(() => document.querySelector<HTMLElement>(`[data-testid="page-thumb"][data-page="${next}"] > button`)?.focus());
+              }
             }}
             onDragLeave={() => setDragOver(null)}
             onDrop={(e) => {
@@ -145,7 +157,7 @@ function PageList({ pdf, pdfRevision }: { pdf: PdfDoc; pdfRevision: number }) {
             <Thumb pdf={pdf} index={k} no={i + 1} rotate={rotation(k)} content={contentKeys.current[k] ?? ''} active={k === st.pageIndex} changes={st.ops.filter((o) => opPage(o, st.pages, st.origPages) === k).length} onClick={() => st.setPage(k)} />
             {own && (
               <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 gap-1 group-focus-within:flex group-hover:flex">
-                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise" aria-label="Rotate page" onClick={() => rotate(k)}>
+                <button data-testid="thumb-rotate" className={tool} disabled={st.busy} title="Rotate 90° clockwise (Shift+click or Shift+R: counter-clockwise)" aria-label="Rotate page" onClick={(e) => void rotate(k, e.shiftKey ? -90 : 90)}>
                   ↻
                 </button>
                 <button data-testid="thumb-blank" className={tool} disabled={st.busy} title="Insert a blank page after this one" aria-label="Insert blank page after" onClick={() => insertBlank(k)}>
@@ -305,6 +317,7 @@ const SHORTCUTS: [string, string][] = [
   ['PageDown / PageUp', 'Scroll the page, then go to the next / previous page'],
   ['Home / End', 'First / last page'],
   ['Alt + ↑ / ↓', 'Move the focused thumbnail’s page up / down'],
+  ['R / Shift + R, Delete', 'Rotate the focused thumbnail’s page clockwise / back; delete it'],
   ['Ctrl + wheel, Ctrl + = / −', 'Zoom in / out'],
   ['Ctrl + 0', 'Fit page width'],
   ['Ctrl + Z / Ctrl + Shift + Z', 'Undo / redo'],
@@ -350,7 +363,8 @@ const ZOOM_STEP = 1.2;
 const isGridLocked = (ops: EditOperation[]) => ops.some((o) => ['moveElement', 'tableInsertRow', 'tableDeleteRow', 'tableInsertCol', 'tableDeleteCol', 'resizeTable'].includes(o.type));
 const typing = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || !!t.closest('[aria-modal]'));
 
-export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
+/** `onArrange` hands files to Merge & Pages and switches there. */
+export function EditorView({ onArrange }: { onArrange: (files: File[]) => void }) {
   const st = useEditor();
   const [pdf, setPdf] = useState<PdfDoc | null>(null);
   const [pdfRevision, setPdfRevision] = useState(-1);
@@ -549,8 +563,10 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       onDrop={(e) => {
         e.preventDefault();
         setDropActive(false);
-        const f = e.dataTransfer.files[0];
-        if (f) void open(f);
+        const list = Array.from(e.dataTransfer.files);
+        if (list.length > 1) {
+          void askConfirm(`${list.length} files dropped; the editor opens one at a time. Combine them in Merge & Pages instead?`, 'Open in Merge & Pages').then((yes) => yes && onArrange(list));
+        } else if (list[0]) void open(list[0]);
       }}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-sm">
@@ -616,7 +632,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
               className="ml-auto rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-40"
               title="Combine with other PDFs: opens a copy of the edited PDF in Merge & Pages, where these edits can no longer be undone. To reorder, rotate, delete or add pages with undo, use the tools on the page thumbnails."
               disabled={downloading}
-              onClick={() => void download((b, name) => onArrange(new File([b], name, { type: 'application/pdf' })), false)}
+              onClick={() => void download((b, name) => onArrange([new File([b], name, { type: 'application/pdf' })]), false)}
             >
               Open in Merge &amp; Pages
             </button>

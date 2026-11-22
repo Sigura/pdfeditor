@@ -55,8 +55,8 @@ export function App() {
           />
         ) : (
           <EditorView
-            onArrange={(file) => {
-              useMergeStore.getState().setIncoming([file]);
+            onArrange={(files) => {
+              useMergeStore.getState().setIncoming(files);
               setTab('merge');
             }}
           />

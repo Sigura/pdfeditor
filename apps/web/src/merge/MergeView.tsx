@@ -248,7 +248,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                   draggable
                   tabIndex={0}
                   data-key={p.key}
-                  aria-label={`${file ? `${file.name} page ${p.pageIndex + 1}` : 'Blank page'}, position ${i + 1} of ${pages.length}. Alt+arrows move it, Delete removes it`}
+                  aria-label={`${file ? `${file.name} page ${p.pageIndex + 1}` : 'Blank page'}, position ${i + 1} of ${pages.length}. Alt+arrows move it, R rotates it, Delete removes it`}
                   onKeyDown={(e) => {
                     if (e.target !== e.currentTarget) return;
                     const step = e.altKey ? { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key] : undefined;
@@ -258,6 +258,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                       if (to < 0 || to >= pages.length) return;
                       movePage(i, to);
                       requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-key="${CSS.escape(p.key)}"]`)?.focus());
+                    } else if (e.key.toLowerCase() === 'r' && file && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                      e.preventDefault();
+                      rotatePage(p.key, e.shiftKey ? -90 : 90);
                     } else if (e.key === 'Delete') {
                       e.preventDefault();
                       const next = pages[i + 1] ?? pages[i - 1];
@@ -305,7 +308,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                   </div>
                   <div className="absolute top-2 right-2 hidden gap-1 group-hover:flex group-focus-within:flex">
                     {file && (
-                      <button data-testid="page-rotate" title="Rotate 90° clockwise" aria-label="Rotate page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => rotatePage(p.key)}>
+                      <button data-testid="page-rotate" title="Rotate 90° clockwise (Shift+click or Shift+R: counter-clockwise)" aria-label="Rotate page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={(e) => rotatePage(p.key, e.shiftKey ? -90 : 90)}>
                         ↻
                       </button>
                     )}
@@ -319,7 +322,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                       ×
                     </button>
                   </div>
-                  {p.rotate > 0 && <span className="absolute top-2 left-2 rounded bg-sky-600 px-1 text-[10px] text-white">↻ {p.rotate}°</span>}
+                  {p.rotate > 0 && <span className="pointer-events-none absolute bottom-7 left-2 rounded bg-sky-600 px-1 text-[10px] text-white">↻ {p.rotate}°</span>}
                 </li>
               );
             })}
