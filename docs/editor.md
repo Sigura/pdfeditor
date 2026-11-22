@@ -58,7 +58,7 @@ Behaviour:
 
 ## Pages, paging and scans
 
-- Page list (left): drag a thumbnail to reorder, and hover (or Tab to) it for ↻ rotate, + insert a blank page after it, × delete. Each change is one `arrangePages` op, so it undoes like any other change. A rotated page stays upright while editing and shows "↻ N° on download". The toolbar's *Page n / N* box counts in display order: type a number and press Enter to go there.
+- Page list (left): drag a thumbnail to reorder, and hover (or Tab to) it for ↻ rotate, + insert a blank page after it, ⧉ duplicate it, × delete. A duplicate is the page as in the original file (straightening included, earlier edits not), and it is edited on its own. Each change is one `arrangePages` op, so it undoes like any other change. A rotated page stays upright while editing and shows "↻ N° on download". The toolbar's *Page n / N* box counts in display order: type a number and press Enter to go there.
 - Paging: when a table or text grows past the bottom of a page, the rows continue on the next page and that page's content moves down. Past the last page you are asked whether the new page copies the header/footer or starts empty, whether a cut table repeats its header rows, and whether a copied page number is kept.
 - Straighten: scanned pages are checked for tilt when a document opens. A banner offers *Straighten all*, and the bar above a scanned page detects the angle, fine-tunes it in 0.1° steps or resets it. Straighten a page before editing it.
 - Download: the amber dot next to the file name means there are changes you haven't downloaded yet. *Download* (Ctrl+S) saves `<name>-edited.pdf`.

@@ -130,6 +130,51 @@ test('page tools in the editor: reorder, blank, rotate and delete are changes th
   await expect(changes(page)).toHaveCount(3);
 });
 
+test('duplicate page: the copy is edited on its own in the editor; Merge repeats a page', async ({ page }) => {
+  await open(page, 'latin-standard14.pdf');
+  const thumbs = page.getByTestId('page-thumb');
+  const order = () => thumbs.evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-page'))));
+  await thumbs.nth(0).hover();
+  await thumbs.nth(0).getByTestId('thumb-duplicate').click();
+  await expect.poll(order).toEqual([0, 2, 1]);
+  await thumbs.nth(1).click();
+  await expect(page.getByTestId('page-jump')).toHaveValue('2');
+  const box = page.getByTestId('text-box').first();
+  await expect(box).toHaveAttribute('data-box-id', /^b-p2-/);
+  await box.click();
+  await box.click();
+  await expect(page.getByTestId('box-editor')).toBeFocused();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('Copy Report');
+  await page.keyboard.press('Control+Enter');
+  await expect(changes(page)).toHaveCount(2);
+
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  const text = async (n: number) => (await (await doc.getPage(n)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');
+  expect(doc.numPages).toBe(3);
+  expect(await text(1)).toContain('Quarterly Report');
+  expect(await text(1)).not.toContain('Copy Report');
+  expect(await text(2)).toContain('Copy Report');
+  expect(await text(2)).not.toContain('Quarterly Report');
+  await doc.destroy();
+
+  await page.getByRole('button', { name: 'Merge & Pages', exact: true }).click();
+  await page.getByTestId('merge-input').setInputFiles(fixture('latin-standard14.pdf'));
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(2);
+  await items.nth(1).hover();
+  await items.nth(1).getByTestId('page-duplicate').click();
+  await expect(items).toHaveCount(3);
+  const [merged] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /Merge & download/ }).click()]);
+  expect(merged.suggestedFilename()).toBe('latin-standard14-merged.pdf');
+  const out = await getDocument({ data: new Uint8Array(readFileSync((await merged.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
+  expect(out.numPages).toBe(3);
+  const t = async (n: number) => (await (await out.getPage(n)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');
+  expect(await t(3)).toBe(await t(2));
+  await out.destroy();
+});
+
 test('edit text, nudge, restyle, undo one change and download', async ({ page }) => {
   await open(page, 'latin-standard14.pdf');
   const box = page.getByTestId('text-box').first();

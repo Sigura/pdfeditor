@@ -44,7 +44,7 @@ const PAGE_DRAG = 'application/x-pdf-toolkit-page';
 
 /**
  * Thumbnails in display order with page tools (drag to reorder, rotate, insert a blank page after,
- * delete). Each change is one arrangePages op, so undo takes it back. Pages added by the flow follow
+ * duplicate, delete). Each change is one arrangePages op, so undo takes it back. Pages added by the flow follow
  * the arranged pages and have no tools.
  */
 function PageList({ pdf }: { pdf: PdfDoc }) {
@@ -67,6 +67,13 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
     const list = entries();
     list.splice(list.findIndex((e) => e.page === k) + 1, 0, { page: base, rotate: 0 });
     commit(list, [...(arr?.blanks ?? []), turned ? { width: h, height: w } : { width: w, height: h }]);
+  };
+  const duplicate = (k: number) => {
+    const list = entries();
+    list.splice(list.findIndex((e) => e.page === k) + 1, 0, { page: base, rotate: rotation(k) });
+    const tilt = st.ops.findLast((o) => o.type === 'deskewPage' && o.pageIndex === k);
+    const arrange: EditOperation = { type: 'arrangePages', order: list.map(({ page, rotate }) => (rotate ? { page, rotate: rotate as 0 | 90 | 180 | 270 } : { page })), blanks: [...(arr?.blanks ?? []), { copy: k }] };
+    void st.edit(tilt?.type === 'deskewPage' ? [arrange, { ...tilt, pageIndex: base }] : [arrange]);
   };
   const move = (from: number, before: number) => {
     const list = entries();
@@ -111,6 +118,9 @@ function PageList({ pdf }: { pdf: PdfDoc }) {
                 </button>
                 <button data-testid="thumb-blank" className={tool} disabled={st.busy} title="Insert a blank page after this one" aria-label="Insert blank page after" onClick={() => insertBlank(k)}>
                   +
+                </button>
+                <button data-testid="thumb-duplicate" className={tool} disabled={st.busy} title="Duplicate this page after it, as in the original file (its edits are not copied); the copy is edited on its own" aria-label="Duplicate page" onClick={() => duplicate(k)}>
+                  ⧉
                 </button>
                 <button data-testid="thumb-delete" className={`${tool} hover:text-red-600`} disabled={st.busy || shown.length < 2} title="Delete page" aria-label="Delete page" onClick={() => remove(k)}>
                   ×

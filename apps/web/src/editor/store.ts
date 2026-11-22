@@ -264,7 +264,8 @@ export const useEditor = create<EditorState>((set, get) => ({
           const need = get().overflows.find((o) => o.needsLayout?.length)?.needsLayout;
           const docId = get().docId;
           if (!need || !docId) break;
-          const models = need.map((i) => get().origPages[i]!);
+          // A page copy has no original model; its current one shows the copied page.
+          const models = need.map((i) => get().origPages[i] ?? get().pages[i]!);
           let layouts: EditOperation[];
           try {
             layouts = await track('Measuring scanned page layout…', (step) => measureScanLayouts(docId, models, (i, n) => step(`Measuring scanned page layout ${i}/${n}…`)));

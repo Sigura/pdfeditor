@@ -125,7 +125,9 @@ export type DeskewPage = z.infer<typeof DeskewPageOp>;
 /**
  * Page arrangement of the output (the last one wins). `order` lists edit page indices in output order;
  * a page left out is deleted. `blanks` are appended to the edit document as pages base…base+B−1
- * (base = the original page count), so they can be edited. Pages added by the flow come after them
+ * (base = the original page count), so they can be edited: an empty page {width, height}, or {copy: k}, a
+ * copy of edit page k (an earlier one) as it is before the edits, so the copy is edited on its own. New
+ * entries go last, so the indices of existing ones never change. Pages added by the flow come after them
  * and are always output last. `rotate` adds to the page's rotation. Applied on download only.
  */
 export const ArrangePagesOp = z.object({
@@ -135,7 +137,7 @@ export const ArrangePagesOp = z.object({
     .min(1)
     .max(10_000)
     .refine((o) => new Set(o.map((e) => e.page)).size === o.length, 'A page appears twice'),
-  blanks: z.array(z.object({ width: finite.positive(), height: finite.positive() })).max(1000),
+  blanks: z.array(z.union([z.object({ width: finite.positive(), height: finite.positive() }), z.object({ copy: z.number().int().min(0) })])).max(1000),
 });
 export type ArrangePages = z.infer<typeof ArrangePagesOp>;
 

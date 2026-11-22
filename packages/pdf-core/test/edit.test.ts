@@ -882,6 +882,27 @@ describe('table paging (paged-table.pdf)', () => {
     expect((await loadPdf(await arrangePdf(res.bytes, [{ page: 1 }]))).doc.getPageCount()).toBe(1);
   });
 
+  it('arrangePages copies: a copy is its own edit page with its own ids; editing it leaves the source alone; download orders it', async () => {
+    const original = fixture('latin-standard14.pdf');
+    const arrange = { type: 'arrangePages' as const, order: [{ page: 0 }, { page: 2 }, { page: 1 }], blanks: [{ copy: 0 }] };
+    const res0 = await applyEdits(original, [arrange]);
+    expect(res0.pages).toHaveLength(3);
+    const src = res0.pages[0]!.textBoxes.find((b) => b.text === 'Quarterly Report')!;
+    const copy = res0.pages[2]!.textBoxes.find((b) => b.text === 'Quarterly Report')!;
+    expect(copy.id).not.toBe(src.id);
+    const res = await applyEdits(original, [arrange, { type: 'replaceText', elementId: copy.id, text: 'Copy Report' }]);
+    expect(res.reports).toMatchObject([{ elementId: copy.id, pageIndex: 2, strategy: 'original' }]);
+    expect(Buffer.from(res.bytes.subarray(0, original.length)).equals(Buffer.from(original))).toBe(true);
+    const texts = await pageTexts(await arrangePdf(res.bytes, arrange.order));
+    expect(texts.map((p) => p.map((x) => x.str))).toEqual([
+      expect.arrayContaining(['Quarterly Report']),
+      expect.arrayContaining(['Copy Report']),
+      expect.not.arrayContaining(['Copy Report']),
+    ]);
+    expect(texts[0]!.map((x) => x.str)).not.toContain('Copy Report');
+    await expect(applyEdits(original, [{ ...arrange, blanks: [{ copy: 2 }] }])).rejects.toThrow(/page 3 to copy does not exist/);
+  });
+
   it('past the last page: needsPage until the user picks; copy repeats the header/footer bands, empty does not; the table is split under one id; save → reopen', async () => {
     const { original, t } = await setup();
     const rows = Array.from({ length: 30 }, () => ({ type: 'tableInsertRow' as const, tableId: t.id, index: 3, position: 'below' as const }));

@@ -28,7 +28,7 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
 }
 
 export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
-  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, removeFile, clear, setBusy, setError } = useMergeStore();
+  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, clear, setBusy, setError } = useMergeStore();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -222,6 +222,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     )}
                     <button data-testid="page-blank" title="Insert a blank page after this one" aria-label="Insert blank page after" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => insertBlank(i)}>
                       +
+                    </button>
+                    <button data-testid="page-duplicate" title="Duplicate this page after it" aria-label="Duplicate page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => duplicatePage(p.key)}>
+                      ⧉
                     </button>
                     <button title="Delete page" aria-label="Delete page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
                       ×

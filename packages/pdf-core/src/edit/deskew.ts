@@ -13,6 +13,21 @@ export function deskews(ops: EditOperation[]): Map<number, DeskewPage> {
   return new Map(ops.flatMap((op) => (op.type === 'deskewPage' ? [[op.pageIndex, op] as const] : [])));
 }
 
+/** Appends the arrangement's blank and copied pages, so edit page indices exist before analysis. */
+export async function addArrangedPages(doc: PDFDocument, ops: EditOperation[]): Promise<void> {
+  for (const b of ops.findLast((op) => op.type === 'arrangePages')?.blanks ?? []) {
+    if ('copy' in b) {
+      const count = doc.getPageCount();
+      if (b.copy >= count) throw new PdfError('INVALID_EDIT', `arrangePages: page ${b.copy + 1} to copy does not exist (${count} pages)`);
+      const [copy] = await doc.copyPages(doc, [b.copy]);
+      doc.addPage(copy!);
+    } else {
+      const page = doc.addPage([b.width, b.height]);
+      page.node.set(PDFName.of('Contents'), doc.context.register(doc.context.stream('')));
+    }
+  }
+}
+
 /** Replaces each deskewed page's content with one stream: paper fill, then the old content rotated about the crop box centre. */
 export function applyDeskews(doc: PDFDocument, ops: EditOperation[]): void {
   const pages = doc.getPages();
@@ -35,9 +50,11 @@ export function applyDeskews(doc: PDFDocument, ops: EditOperation[]): void {
 
 /** The file with only its deskewPage ops applied (incremental): the coordinates every other op is in. */
 export async function deskewPdf(original: Uint8Array, ops: EditOperation[]): Promise<Uint8Array> {
-  if (!deskews(ops).size) return original;
+  // Copies keep the indices of the edit document, so pages measured here (scan layouts) line up.
+  if (!deskews(ops).size && !ops.findLast((op) => op.type === 'arrangePages')?.blanks.some((b) => 'copy' in b)) return original;
   const { doc, decrypted } = await loadPdf(original);
   const snapshot = decrypted ? null : snapshotObjects(doc.context);
+  await addArrangedPages(doc, ops);
   applyDeskews(doc, ops);
   return snapshot ? writeIncremental(original, doc.context, snapshot) : doc.save({ useObjectStreams: false });
 }
