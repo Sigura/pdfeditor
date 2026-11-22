@@ -15,27 +15,46 @@ export const minCellSize = (table: Table, axis: 'row' | 'col', i: number) =>
 function NumField({ label, value, onCommit, step = 0.5, min, testId }: { label: string; value: number; onCommit?: (v: number) => void; step?: number; min?: number; testId?: string }) {
   const shown = Number(value.toFixed(2));
   const [text, setText] = useState(String(shown));
+  const [rejected, setRejected] = useState<string>();
   useEffect(() => setText(String(shown)), [shown]);
+  useEffect(() => {
+    if (!rejected) return;
+    const t = setTimeout(() => setRejected(undefined), 2500);
+    return () => clearTimeout(t);
+  }, [rejected]);
   const commit = () => {
     const v = Number(text);
-    if (!Number.isFinite(v) || (min !== undefined && v < min - 1e-6) || Math.abs(v - shown) < 1e-3) return setText(String(shown));
+    const bad = text.trim() === '' || !Number.isFinite(v) ? `“${text}” is not a number` : min !== undefined && v < min - 1e-6 ? `At least ${min.toFixed(1)} pt` : undefined;
+    if (bad || Math.abs(v - shown) < 1e-3) {
+      setRejected(bad);
+      return setText(String(shown));
+    }
     onCommit?.(v);
   };
   return (
-    <label className="flex items-center gap-1">
+    <label className="relative flex items-center gap-1">
       <span className="w-5 text-slate-500">{label}</span>
       <input
         type="number"
         step={step}
         disabled={!onCommit}
         title={min !== undefined ? `min ${min.toFixed(1)} pt` : undefined}
+        aria-invalid={rejected ? true : undefined}
         data-testid={testId}
-        className="w-full min-w-0 rounded border border-slate-300 px-1 py-0.5 tabular-nums disabled:bg-slate-50 disabled:text-slate-500"
+        className={`w-full min-w-0 rounded border px-1 py-0.5 tabular-nums disabled:bg-slate-50 disabled:text-slate-500 ${rejected ? 'border-red-500 ring-2 ring-red-300' : 'border-slate-300'}`}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          setRejected(undefined);
+        }}
         onBlur={commit}
         onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
       />
+      {rejected && (
+        <span role="status" data-testid="numfield-rejected" className="absolute top-full left-5 z-10 mt-0.5 rounded bg-red-600 px-1 text-[10px] whitespace-nowrap text-white">
+          {rejected}, kept {shown}
+        </span>
+      )}
     </label>
   );
 }

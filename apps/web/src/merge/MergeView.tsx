@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import * as pdfjs from 'pdfjs-dist';
-import { apiError, downloadBlob } from '../lib/api.ts';
-import { askConfirm, askPassword } from '../lib/Dialogs.tsx';
+import { apiError, downloadBlob, serverLimits } from '../lib/api.ts';
+import { askConfirm, askPassword, modalOpen } from '../lib/Dialogs.tsx';
 import { Thumbnail } from './Thumbnail.tsx';
 import { BLANK, toSegments, useMergeStore } from './store.ts';
+
+const mb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
 
 const COLORS = ['bg-sky-500', 'bg-amber-500', 'bg-emerald-500', 'bg-rose-500', 'bg-violet-500', 'bg-lime-500'];
 
@@ -28,7 +30,7 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
 }
 
 export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
-  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, clear, setBusy, setError } = useMergeStore();
+  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, undoStack, undoRemove, clear, setBusy, setError } = useMergeStore();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -38,9 +40,16 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
 
   const addFiles = async (list: FileList | File[]) => {
     setError(null);
-    for (const f of Array.from(list)) {
+    // Copy before the first await: the input's FileList empties when its value is reset.
+    const picked = Array.from(list);
+    const limits = await serverLimits().catch(() => null);
+    for (const f of picked) {
       if (!f.name.toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf') {
         setError(`${f.name}: not a PDF`);
+        continue;
+      }
+      if (limits && f.size > limits.maxFileBytes) {
+        setError(`${f.name} is ${mb(f.size)} MB; files can be at most ${mb(limits.maxFileBytes)} MB.`);
         continue;
       }
       try {
@@ -52,6 +61,17 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       }
     }
   };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey || modalOpen() || t.closest('input, textarea, [contenteditable="true"]')) return;
+      e.preventDefault();
+      useMergeStore.getState().undoRemove();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     // Read from the store, not the render: StrictMode runs the effect twice with the same render.
@@ -75,6 +95,8 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
     setError(null);
     try {
       const used = fileIds.filter((id) => pages.some((p) => p.fileId === id));
+      const limits = await serverLimits();
+      if (used.length > limits.maxFiles) throw new Error(`The pages come from ${used.length} files; one merge takes at most ${limits.maxFiles}. Merge in parts, then merge the results.`);
       const form = new FormData();
       for (const id of used) {
         const f = files[id]!;
@@ -137,6 +159,15 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           Edit result
         </button>
         <button
+          data-testid="merge-undo"
+          className="rounded px-3 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
+          title="Bring back the last removed page or file (Ctrl+Z)"
+          disabled={busy || !undoStack.length}
+          onClick={undoRemove}
+        >
+          Undo
+        </button>
+        <button
           data-testid="merge-clear"
           className="rounded px-3 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
           disabled={busy || !pages.length}
@@ -176,6 +207,23 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                 <li
                   key={p.key}
                   draggable
+                  tabIndex={0}
+                  data-key={p.key}
+                  aria-label={`${file ? `${file.name} page ${p.pageIndex + 1}` : 'Blank page'}, position ${i + 1} of ${pages.length}. Alt+arrows move it, Delete removes it`}
+                  onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return;
+                    const step = e.altKey ? { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key] : undefined;
+                    if (step) {
+                      e.preventDefault();
+                      const to = i + step;
+                      if (to < 0 || to >= pages.length) return;
+                      movePage(i, to);
+                      requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-key="${CSS.escape(p.key)}"]`)?.focus());
+                    } else if (e.key === 'Delete') {
+                      e.preventDefault();
+                      removePage(p.key);
+                    }
+                  }}
                   data-testid="merge-page"
                   onDragStart={(e) => {
                     setDragIndex(i);
@@ -200,7 +248,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     setDragIndex(null);
                     setOverIndex(null);
                   }}
-                  className={`group relative cursor-grab rounded p-1 ${overIndex === i && dragIndex !== i ? 'ring-2 ring-sky-500' : ''} ${dragIndex === i ? 'opacity-40' : ''}`}
+                  className={`group relative cursor-grab rounded p-1 focus-visible:outline-2 focus-visible:outline-sky-500 ${overIndex === i && dragIndex !== i ? 'ring-2 ring-sky-500' : ''} ${dragIndex === i ? 'opacity-40' : ''}`}
                 >
                   {file ? (
                     <Thumbnail file={file} pageIndex={p.pageIndex} rotate={p.rotate} />
@@ -226,7 +274,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
                     <button data-testid="page-duplicate" title="Duplicate this page after it" aria-label="Duplicate page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-sky-600" onClick={() => duplicatePage(p.key)}>
                       ⧉
                     </button>
-                    <button title="Delete page" aria-label="Delete page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
+                    <button data-testid="page-delete" title="Delete page (Ctrl+Z brings it back)" aria-label="Delete page" className="h-6 w-6 rounded-full bg-white/90 text-sm shadow hover:text-red-600" onClick={() => removePage(p.key)}>
                       ×
                     </button>
                   </div>

@@ -33,7 +33,7 @@ export function openPdf(data: Uint8Array, password?: string) {
 
 export type PdfDoc = Awaited<ReturnType<typeof openPdf>>;
 
-/** `rotate`: degrees added to the page's own rotation. */
+/** `rotate`: degrees added to the page's own rotation. Returns a JPEG object URL: revoke it when done. */
 export async function renderThumbnail(doc: PdfDoc, pageNumber: number, width: number, rotate = 0): Promise<string> {
   const page = await doc.getPage(pageNumber);
   const rotation = (page.rotate + rotate) % 360;
@@ -43,5 +43,7 @@ export async function renderThumbnail(doc: PdfDoc, pageNumber: number, width: nu
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
   await page.render({ canvas, viewport }).promise;
-  return canvas.toDataURL('image/png');
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+  if (!blob) throw new Error(`Page ${pageNumber}: thumbnail encoding failed`);
+  return URL.createObjectURL(blob);
 }

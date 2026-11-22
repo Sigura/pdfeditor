@@ -168,10 +168,19 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState<Viewport | null>(null);
+  const [shownZoom, setShownZoom] = useState(0);
   const [drag, setDrag] = useState<BoxDrag | null>(null);
   const [draw, setDraw] = useState<GridDraw | null>(null);
   const dragged = useRef(false);
   const { zoom, hoveredId, selectedId, editingId, reports, tool, newText, nudge, ops, showChanges, origPages, tableSetup, hover, select, startEditing, edit, setTool, startSetup } = useEditor();
+  // Wheel zoom fires many steps: re-render once it settles, and CSS-scale the page shown until then.
+  const [renderZoom, setRenderZoom] = useState(zoom);
+  useEffect(() => {
+    const t = setTimeout(() => setRenderZoom(zoom), 150);
+    return () => clearTimeout(t);
+  }, [zoom]);
+  const scale = vp && shownZoom ? zoom / shownZoom : 1;
+  const scaled: CSSProperties | undefined = scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: '0 0' } : undefined;
   const latest = useRef({ vp, model });
   latest.current = { vp, model };
 
@@ -346,37 +355,45 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   useEffect(() => {
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
+    const activity = useEditor.getState().begin(`Rendering page ${model.pageIndex + 1}…`);
     void (async () => {
       const page = await pdf.getPage(model.pageIndex + 1);
       if (cancelled) return;
-      const viewport = page.getViewport({ scale: zoom });
-      const canvas = canvasRef.current!;
+      const viewport = page.getViewport({ scale: renderZoom });
+      // Off screen, so the previous rendering stays visible (scaled) until the new one is ready.
+      const off = document.createElement('canvas');
       const ratio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(viewport.width * ratio);
-      canvas.height = Math.floor(viewport.height * ratio);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      task = page.render({ canvas, viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
-      const activity = useEditor.getState().begin(`Rendering page ${model.pageIndex + 1}…`);
+      off.width = Math.floor(viewport.width * ratio);
+      off.height = Math.floor(viewport.height * ratio);
+      task = page.render({ canvas: off, viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined });
       try {
         await task.promise;
       } catch (e) {
-        if ((e as Error).name !== 'RenderingCancelledException') throw e;
-      } finally {
-        useEditor.getState().end(activity);
+        if ((e as Error).name === 'RenderingCancelledException') return;
+        throw e;
       }
+      if (cancelled) return;
+      const canvas = canvasRef.current!;
+      canvas.width = off.width;
+      canvas.height = off.height;
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
+      canvas.getContext('2d')!.drawImage(off, 0, 0);
       // pdf.js types the converted points as any[]; they are always [x, y].
-      if (!cancelled) {
-        registerCanvas({ canvas, vp: viewport as unknown as Viewport, pageIndex: model.pageIndex });
-        setVp(viewport as unknown as Viewport);
-        useEditor.getState().rendered();
-      }
-    })();
+      registerCanvas({ canvas, vp: viewport as unknown as Viewport, pageIndex: model.pageIndex });
+      setVp(viewport as unknown as Viewport);
+      setShownZoom(renderZoom);
+      useEditor.getState().rendered();
+    })()
+      .catch((e: unknown) => {
+        if (!cancelled) useEditor.getState().setError(`Page ${model.pageIndex + 1} could not be shown: ${(e as Error).message ?? e}`);
+      })
+      .finally(() => useEditor.getState().end(activity));
     return () => {
       cancelled = true;
       task?.cancel();
     };
-  }, [pdf, model.pageIndex, zoom, revision]);
+  }, [pdf, model.pageIndex, renderZoom, revision]);
 
   const changed = new Set(ops.map(opTarget));
   const deletedIds = new Set(ops.flatMap((o) => (o.type === 'deleteElement' ? [o.elementId] : [])));
@@ -386,13 +403,13 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
   return (
     <div
       className={`relative mx-auto bg-white shadow-lg ${tool === 'addText' ? 'cursor-text' : tool === 'table' && !tableSetup ? 'cursor-crosshair' : ''}`}
-      style={vp ? { width: vp.width, height: vp.height } : undefined}
+      style={vp ? { width: vp.width * scale, height: vp.height * scale } : undefined}
       onClick={onPageClick}
       onMouseDown={onPageMouseDown}
     >
-      <canvas ref={canvasRef} className="block" />
+      <canvas ref={canvasRef} className="block" style={scaled} />
       {vp && (
-        <div ref={overlayRef} className="absolute inset-0" data-testid="overlay">
+        <div ref={overlayRef} className="absolute top-0 left-0" style={{ width: vp.width, height: vp.height, ...scaled }} data-testid="overlay">
           {model.flowIn?.map((r, i) => {
             const c = toCss(vp, r);
             return (
@@ -405,8 +422,8 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
               />
             );
           })}
-          {model.tables.map((t) => (tableSetup?.tableId === t.id ? null : <TableOverlay key={t.id} table={t} vp={vp} zoom={zoom} pdf={pdf} />))}
-          {tableSetup?.pageIndex === model.pageIndex && <TableSetupView key={`${tableSetup.tableId}:${JSON.stringify(tableSetup.rect)}`} draft={tableSetup} model={model} vp={vp} zoom={zoom} pdf={pdf} />}
+          {model.tables.map((t) => (tableSetup?.tableId === t.id ? null : <TableOverlay key={t.id} table={t} vp={vp} zoom={shownZoom} pdf={pdf} />))}
+          {tableSetup?.pageIndex === model.pageIndex && <TableSetupView key={`${tableSetup.tableId}:${JSON.stringify(tableSetup.rect)}`} draft={tableSetup} model={model} vp={vp} zoom={shownZoom} pdf={pdf} />}
           {draw && (
             <div
               className="pointer-events-none absolute border-2 border-dashed border-orange-500 bg-orange-400/10"
@@ -424,7 +441,7 @@ export function PageView({ pdf, model, revision }: { pdf: PdfDoc; model: PageMod
             ))}
           {model.textBoxes.map((b) => {
             const css = toCss(vp, b.bbox);
-            if (b.id === editingId) return <BoxEditor key={b.id} box={b} css={css} zoom={zoom} onDone={(t) => void commit(b, t)} />;
+            if (b.id === editingId) return <BoxEditor key={b.id} box={b} css={css} zoom={shownZoom} onDone={(t) => void commit(b, t)} />;
             const active = b.id === hoveredId || b.id === selectedId;
             const report = reports.find((r) => r.elementId === b.id);
             const editable = b.runs.every((r) => r.decodable);

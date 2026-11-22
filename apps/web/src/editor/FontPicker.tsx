@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PageModel, TextRun } from '@pdf-toolkit/shared';
 import { installedFonts, type InstalledFont } from '../lib/api.ts';
 import type { PdfDoc } from '../lib/pdfjs.ts';
@@ -126,6 +126,8 @@ export function FontPicker({ pdf, pages, revision, value, onChange, auto }: { pd
   const newText: FontChoice = value ?? store.newText;
   const setNewText = onChange ?? store.setNewText;
   const [open, setOpen] = useState(false);
+  const [sizeDraft, setSizeDraft] = useState<string>();
+  const root = useRef<HTMLDivElement>(null);
   const [imgs, setImgs] = useState<Record<string, string>>({});
   const fonts = useMemo(() => {
     const seen = new Map<string, TextRun>();
@@ -142,8 +144,36 @@ export function FontPicker({ pdf, pages, revision, value, onChange, auto }: { pd
     };
   }, [open, pdf, fonts, revision]);
 
+  // Capture phase, so Esc closes only the menu and doesn't also clear the page selection.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('mousedown', onDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('mousedown', onDown, true);
+    };
+  }, [open]);
+
+  const commitSize = () => {
+    if (sizeDraft === undefined) return;
+    setSizeDraft(undefined);
+    const n = Number(sizeDraft);
+    if (sizeDraft.trim() === '') {
+      if (auto) setNewText({ fontSize: undefined });
+    } else if (Number.isFinite(n) && n > 0) setNewText({ fontSize: Math.min(200, Math.max(4, n)) });
+  };
+
   return (
-    <div className="relative flex items-center gap-1" data-testid="font-picker">
+    <div ref={root} className="relative flex items-center gap-1" data-testid="font-picker">
       <button className="max-w-48 truncate rounded border border-slate-300 px-2 py-1 text-left" onClick={() => setOpen(!open)} title="Font for new text">
         {newText.fontFamily ?? auto?.fontFamily} ▾
       </button>
@@ -151,9 +181,15 @@ export function FontPicker({ pdf, pages, revision, value, onChange, auto }: { pd
         type="number"
         min={4}
         max={200}
-        value={newText.fontSize ?? ''}
+        data-testid="font-size"
+        value={sizeDraft ?? newText.fontSize ?? ''}
         placeholder={auto && (auto.fontSize ? String(Math.round(auto.fontSize * 10) / 10) : 'auto')}
-        onChange={(e) => setNewText({ fontSize: e.target.value === '' && auto ? undefined : Math.max(4, Number(e.target.value) || 12) })}
+        onChange={(e) => setSizeDraft(e.target.value)}
+        onBlur={commitSize}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commitSize();
+          else if (e.key === 'Escape') setSizeDraft(undefined);
+        }}
         className="w-14 rounded border border-slate-300 px-1 py-1"
         title="Font size (pt)"
       />

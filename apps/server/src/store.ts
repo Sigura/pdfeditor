@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { EditOperationSchema, StrategyReportSchema } from '@pdf-toolkit/shared';
@@ -52,12 +52,19 @@ export class DocumentStore {
     return meta;
   }
 
+  // Every document request reads the meta, so touching meta.json here makes the TTL count from the last use.
   async meta(docId: string): Promise<DocMeta> {
+    const file = path.join(this.dir(docId), 'meta.json');
     try {
-      return MetaSchema.parse(JSON.parse(await readFile(path.join(this.dir(docId), 'meta.json'), 'utf8')));
+      const meta = MetaSchema.parse(JSON.parse(await readFile(file, 'utf8')));
+      const now = new Date();
+      await utimes(file, now, now);
+      return meta;
     } catch (e) {
       if (e instanceof HttpError) throw e;
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new HttpError(404, 'NOT_FOUND', 'Document not found or expired');
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new HttpError(404, 'NOT_FOUND', `This document has expired (files are kept ${Math.round(this.ttlMs / 60000)} minutes after their last use). Reopen the file.`);
+      }
       throw e;
     }
   }
