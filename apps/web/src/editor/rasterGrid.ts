@@ -121,8 +121,6 @@ function dominant(img: Pixels, keep: (x: number, y: number, l: number) => boolea
 
 export type InkBox = Rect & { line: number; ascent: number };
 
-const BASELINE_DENSE = 0.4;
-
 /**
  * Box of the dark pixels in pixel rect `p` (page space) and the height of its tallest run of inked
  * pixel rows, which is one line of text. Null when it has no ink or is mostly dark (a dark fill).
@@ -145,11 +143,13 @@ function inkBox(region: Region, p: Rect, t: number): InkBox | null {
     run = inked ? run + 1 : 0;
     if (run > tallest) [tallest, tallestEnd] = [run, y];
   }
-  // Baseline of the tallest line: its last row with at least DENSE of its busiest row's ink; only descenders hang below it.
+  // Baseline of the tallest line: the row in its lower half after which the ink drops the most. Most
+  // glyphs end there and only descenders (and tails like Q's) hang below, even when they are dense.
   const rows = counts.slice(tallestEnd - y0 - tallest + 1, tallestEnd - y0 + 1);
-  const busiest = Math.max(0, ...rows);
   let base = rows.length - 1;
-  while (base > 0 && rows[base]! < BASELINE_DENSE * busiest) base--;
+  for (let i = Math.floor(rows.length / 2); i < rows.length; i++) {
+    if (rows[i]! - (rows[i + 1] ?? 0) > rows[base]! - (rows[base + 1] ?? 0)) base = i;
+  }
   if (!n || n > 0.5 * (x1 - x0) * (y1 - y0)) return null;
   const a = toPage(bx0 - 0.5, by0 - 0.5);
   const b = toPage(bx1 + 0.5, by1 + 0.5);
