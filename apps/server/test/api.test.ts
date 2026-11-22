@@ -111,6 +111,9 @@ describe('GET /api/fonts/:id/sample.svg', () => {
     expect(svg).toMatch(/^<svg [^>]*viewBox="0 -\d+ \d+ \d+"><path transform="scale\(1,-1\)" d="M[^"]+"\/><\/svg>$/);
     const file = await (await app.request(`/api/fonts/${arimo.id}`)).arrayBuffer();
     expect(svg.length * 10).toBeLessThan(file.byteLength);
+    // Its space is an empty glyph at the very end of glyf, where fontkit's advanceWidth throws.
+    const plex = fonts.find((f) => f.postscriptName === 'IBMPlexMono-Italic')!;
+    expect((await app.request(`/api/fonts/${plex.id}/sample.svg`)).status).toBe(200);
     expect((await app.request('/api/fonts/99999/sample.svg')).status).toBe(404);
   });
 });

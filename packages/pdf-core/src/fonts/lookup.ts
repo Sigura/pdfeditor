@@ -276,10 +276,13 @@ export function faceSampleSvg(face: FontFace, text: string): string {
   const font = fontkit.create(Buffer.from(faceBytes(face)));
   if (!('numGlyphs' in font)) throw new Error(`${faceKey(face)} is a font collection`);
   // No shaping: font.layout runs GSUB/GPOS (~50-100 ms a face, blocking the server) for kerning a preview doesn't need.
+  // Advances come from hmtx: fontkit's advanceWidth also reads the glyph's bbox, which throws for an empty glyph
+  // stored at the very end of glyf (the space in IBM Plex Mono).
+  const { metrics } = (font as unknown as { hmtx: { metrics: { length: number; get(i: number): { advance: number } } } }).hmtx;
   let x = 0;
   const d = font.glyphsForString(text).map((g) => {
     const s = g.path.translate(x, 0).toSVG();
-    x += g.advanceWidth;
+    x += metrics.get(Math.min(g.id, metrics.length - 1)).advance;
     return s;
   });
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 ${-font.ascent} ${x} ${font.ascent - font.descent}"><path transform="scale(1,-1)" d="${d.join('')}"/></svg>`;
