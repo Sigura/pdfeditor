@@ -754,3 +754,47 @@ test('merge: a removed page comes back with Ctrl+Z, Alt+arrows move the focused 
   await expect(items.first()).toContainText('p.2');
   await expect(items.nth(1)).toBeFocused();
 });
+
+test('merge: Ctrl+Z takes back only the last change, not the ones after a removal', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('merge-input').setInputFiles([fixture('latin-standard14.pdf'), fixture('table.pdf')]);
+  const items = page.getByTestId('merge-page');
+  await expect(items).toHaveCount(3);
+  await items.first().focus();
+  await page.keyboard.press('Delete');
+  await expect(items).toHaveCount(2);
+  await items.first().hover();
+  await items.first().getByTestId('page-rotate').click();
+  await expect(items.first()).toContainText('↻ 90°');
+  await items.nth(1).focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await expect(items.first()).toContainText('table.pdf');
+  await page.getByTestId('merge-undo').click();
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText('latin-standard14.pdf');
+  await expect(items.first()).toContainText('↻ 90°');
+  await page.getByTestId('merge-undo').click();
+  await expect(items.first()).not.toContainText('↻ 90°');
+  await page.getByTestId('merge-undo').click();
+  await expect(items).toHaveCount(3);
+});
+
+test('page list changes are named in the Changes list', async ({ page }) => {
+  await open(page, 'paged-table.pdf');
+  const thumbs = page.getByTestId('page-thumb');
+  const tool = async (n: number, id: string) => {
+    await thumbs.nth(n).hover();
+    await thumbs.nth(n).getByTestId(id).click();
+  };
+  const last = () => changes(page).last();
+  await tool(0, 'thumb-rotate');
+  await expect(last()).toHaveText(/Rotate page 1 to 90°/);
+  await tool(0, 'thumb-blank');
+  await expect(last()).toHaveText(/Insert a blank page after page 1/);
+  await thumbs.nth(0).locator('> button').focus();
+  await page.keyboard.press('Alt+ArrowDown');
+  await expect(last()).toHaveText(/Move page 1 to position 2/);
+  await tool(1, 'thumb-delete');
+  await expect(last()).toHaveText(/Delete page 2/);
+  await expect(changes(page)).toHaveCount(4);
+});

@@ -30,7 +30,7 @@ async function countPages(bytes: Uint8Array, name: string): Promise<{ pageCount:
 }
 
 export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
-  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, undoStack, undoRemove, clear, setBusy, setError } = useMergeStore();
+  const { files, pages, busy, error, addFile, movePage, removePage, rotatePage, insertBlank, duplicatePage, removeFile, undoStack, undo, clear, setBusy, setError } = useMergeStore();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -67,7 +67,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       const t = e.target as HTMLElement;
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey || modalOpen() || t.closest('input, textarea, [contenteditable="true"]')) return;
       e.preventDefault();
-      useMergeStore.getState().undoRemove();
+      useMergeStore.getState().undo();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -161,9 +161,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
         <button
           data-testid="merge-undo"
           className="rounded px-3 py-1.5 text-sm hover:bg-slate-100 disabled:opacity-40"
-          title="Bring back the last removed page or file (Ctrl+Z)"
+          title="Undo the last change to the pages or files (Ctrl+Z)"
           disabled={busy || !undoStack.length}
-          onClick={undoRemove}
+          onClick={undo}
         >
           Undo
         </button>

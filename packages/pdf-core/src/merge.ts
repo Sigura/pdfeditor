@@ -43,8 +43,9 @@ type OutlineNode = { title: PDFObject; dest: PDFArray | null; color?: PDFObject;
 
 /**
  * Reorders, removes and rotates the pages of a file in place (`page`: 0-based index; `rotate` is added to
- * the page's rotation). The catalog, /Info, XMP and outlines stay; an unencrypted file gets an
- * incremental update. Pages left out stay in the file but not in the page tree.
+ * the page's rotation). The catalog, /Info, XMP and outlines stay (outline items and links to removed pages
+ * are unlinked); an unencrypted file gets an incremental update. Pages left out stay in the file but not in
+ * the page tree.
  */
 export async function arrangePdf(bytes: Uint8Array, order: { page: number; rotate?: number }[]): Promise<Uint8Array> {
   const { doc, decrypted } = await loadPdf(bytes);
@@ -68,7 +69,9 @@ export async function arrangePdf(bytes: Uint8Array, order: { page: number; rotat
   tree.set(N('Kids'), doc.context.obj(refs));
   tree.set(N('Count'), PDFNumber.of(refs.length));
   const kept = new Set(refs);
-  pruneOutline(doc, new Set(pages.map((p) => p.ref).filter((r) => !kept.has(r))));
+  const removed = new Set(pages.map((p) => p.ref).filter((r) => !kept.has(r)));
+  pruneOutline(doc, removed);
+  pruneLinks(doc, refs, removed);
   return snapshot ? writeIncremental(bytes, doc.context, snapshot) : doc.save({ useObjectStreams: false });
 }
 
@@ -390,6 +393,27 @@ function readOutline(
     return nodes;
   };
   return walk(root.get(N('First')), 0);
+}
+
+/** Removes, in place, link annotations on the `kept` pages whose destination is one of `removed`, as mergePdfs does. */
+function pruneLinks(doc: PDFDocument, kept: PDFRef[], removed: Set<PDFRef>): void {
+  if (removed.size === 0) return;
+  const resolve = makeDestResolver(doc);
+  const hitsRemoved = (d: PDFObject | undefined) => {
+    const target = resolve(d)?.get(0);
+    return target instanceof PDFRef && removed.has(target);
+  };
+  for (const ref of kept) {
+    const annots = doc.context.lookupMaybe(ref, PDFDict)?.lookupMaybe(N('Annots'), PDFArray);
+    if (!annots) continue;
+    for (let a = annots.size() - 1; a >= 0; a--) {
+      const annot = annots.lookup(a);
+      if (!(annot instanceof PDFDict) || annot.lookup(N('Subtype')) !== N('Link')) continue;
+      const action = annot.lookup(N('A'));
+      const goTo = action instanceof PDFDict && action.lookup(N('S')) === N('GoTo');
+      if (hitsRemoved(annot.get(N('Dest'))) || (goTo && hitsRemoved(action.get(N('D'))))) annots.remove(a);
+    }
+  }
 }
 
 /**

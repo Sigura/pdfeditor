@@ -27,9 +27,9 @@ type MergeState = {
   incoming: File[];
   setIncoming: (files: File[]) => void;
   removeFile: (fileId: string) => void;
-  /** States before each page or file removal, newest last. */
+  /** States before each change to the files or pages, newest last. */
   undoStack: { files: Record<string, SourceFile>; pages: PageItem[] }[];
-  undoRemove: () => void;
+  undo: () => void;
   clear: () => void;
   setBusy: (busy: boolean) => void;
   setError: (error: string | null) => void;
@@ -46,22 +46,23 @@ export const useMergeStore = create<MergeState>((set) => ({
     set((s) => ({
       files: { ...s.files, [file.id]: file },
       pages: [...s.pages, ...Array.from({ length: file.pageCount }, (_, i) => ({ key: `${file.id}:${i}`, fileId: file.id, pageIndex: i, rotate: 0 }))],
+      undoStack: pushUndo(s),
     })),
   movePage: (from, to) =>
     set((s) => {
       const pages = s.pages.slice();
       const [item] = pages.splice(from, 1);
-      if (!item) return s;
+      if (!item || from === to) return s;
       pages.splice(to, 0, item);
-      return { pages };
+      return { pages, undoStack: pushUndo(s) };
     }),
   removePage: (key) => set((s) => ({ pages: s.pages.filter((p) => p.key !== key), undoStack: pushUndo(s) })),
-  rotatePage: (key) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: (p.rotate + 90) % 360 } : p)) })),
+  rotatePage: (key) => set((s) => ({ pages: s.pages.map((p) => (p.key === key ? { ...p, rotate: (p.rotate + 90) % 360 } : p)), undoStack: pushUndo(s) })),
   insertBlank: (index) =>
     set((s) => {
       const pages = s.pages.slice();
       pages.splice(index + 1, 0, { key: `blank:${++blankId}`, fileId: BLANK, pageIndex: -1, rotate: 0 });
-      return { pages };
+      return { pages, undoStack: pushUndo(s) };
     }),
   duplicatePage: (key) =>
     set((s) => {
@@ -70,7 +71,7 @@ export const useMergeStore = create<MergeState>((set) => ({
       const pages = s.pages.slice();
       const src = pages[i]!;
       pages.splice(i + 1, 0, { ...src, key: `${key}+${++blankId}`, copyOf: src.copyOf ?? key });
-      return { pages };
+      return { pages, undoStack: pushUndo(s) };
     }),
   removeFile: (fileId) => {
     releasePdfDocs([fileId]);
@@ -81,7 +82,7 @@ export const useMergeStore = create<MergeState>((set) => ({
     });
   },
   undoStack: [],
-  undoRemove: () =>
+  undo: () =>
     set((s) => {
       const last = s.undoStack.at(-1);
       return last ? { ...last, undoStack: s.undoStack.slice(0, -1) } : s;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFNumber, type PDFObject, PDFRawStream, type PDFRef, PDFTextField, decodePDFRawStream } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName, PDFArray, PDFHexString, PDFNumber, type PDFObject, type PDFPage, PDFRawStream, type PDFRef, PDFTextField, decodePDFRawStream } from 'pdf-lib';
 import { arrangePdf, mergePdfs } from '../src/merge.ts';
 import { addInternalLink, encryptRc4, makePdf } from './helpers.ts';
 
@@ -98,6 +98,27 @@ describe('mergePdfs', () => {
 });
 
 describe('arrangePdf', () => {
+  it('removes links to removed pages from the pages it keeps', async () => {
+    const doc = await makePdf(3, 'A');
+    const [p0, p1, p2] = doc.getPages() as [PDFPage, PDFPage, PDFPage];
+    addInternalLink(doc, p0, p1);
+    addInternalLink(doc, p0, p2);
+    const ctx = doc.context;
+    p2.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 9, 9], A: { S: 'GoTo', D: PDFHexString.fromText('mid') } })));
+    p2.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 9, 9], A: { S: 'URI', URI: PDFHexString.fromText('https://example.com') } })));
+    doc.catalog.set(PDFName.of('Names'), ctx.obj({ Dests: { Names: [PDFHexString.fromText('mid'), [p1.ref, 'Fit']] } }));
+
+    const out = await PDFDocument.load(await arrangePdf(await doc.save({ useObjectStreams: false }), [{ page: 2 }, { page: 0 }]));
+    const targets = (k: number) =>
+      out.getPage(k).node.Annots()!.asArray().map((r) => {
+        const annot = out.context.lookup(r, PDFDict);
+        const dest = annot.lookupMaybe(PDFName.of('Dest'), PDFArray);
+        return dest ? out.getPages().findIndex((p) => p.ref === dest.get(0)) : annot.lookup(PDFName.of('A'), PDFDict).lookup(PDFName.of('S'))!.toString();
+      });
+    expect(targets(1)).toEqual([0]);
+    expect(targets(0)).toEqual(['/URI']);
+  });
+
   it('unlinks outline items that point to removed pages, keeping their children and the open state', async () => {
     const doc = await makePdf(4, 'A');
     const ctx = doc.context;
