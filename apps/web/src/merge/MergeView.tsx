@@ -67,6 +67,9 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
     if (e.dataTransfer.files.length > 0) void addFiles(e.dataTransfer.files);
   };
 
+  const firstFile = files[pages.find((p) => p.fileId !== BLANK)?.fileId ?? ''];
+  const outName = `${(firstFile?.name ?? 'document').replace(/\.pdf$/i, '')}-merged.pdf`;
+
   const merge = async (then: (blob: Blob) => void) => {
     setBusy(true);
     setError(null);
@@ -102,7 +105,7 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
       onDrop={onFileDrop}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
-        <button className="rounded bg-slate-900 px-3 py-1.5 text-sm text-white" onClick={() => inputRef.current?.click()}>
+        <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50" onClick={() => inputRef.current?.click()}>
           Add PDFs
         </button>
         <input
@@ -118,18 +121,18 @@ export function MergeView({ onEdit }: { onEdit: (file: File) => void }) {
           }}
         />
         <button
-          className="rounded bg-emerald-600 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+          className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-700 disabled:opacity-40"
           disabled={!hasPages || busy}
-          onClick={() => void merge((b) => downloadBlob(b, 'merged.pdf'))}
+          onClick={() => void merge((b) => downloadBlob(b, outName))}
         >
           {busy ? 'Merging…' : `Merge & download (${pages.length} pages)`}
         </button>
         <button
           data-testid="merge-edit"
-          className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+          className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           title="Merge, then open the result in the editor"
           disabled={!hasPages || busy}
-          onClick={() => void merge((b) => onEdit(new File([b], 'merged.pdf', { type: 'application/pdf' })))}
+          onClick={() => void merge((b) => onEdit(new File([b], outName, { type: 'application/pdf' })))}
         >
           Edit result
         </button>

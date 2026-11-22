@@ -5,7 +5,7 @@ import { Dialogs } from './lib/Dialogs.tsx';
 import { useEditor } from './editor/store.ts';
 import { useMergeStore } from './merge/store.ts';
 
-const TAB_LABEL = { merge: 'Merge & Pages', edit: 'edit' };
+const TAB_LABEL = { merge: 'Merge & Pages', edit: 'Edit' };
 
 type Tab = 'merge' | 'edit';
 
@@ -20,7 +20,7 @@ export function App() {
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`rounded px-3 py-1 text-sm capitalize ${tab === t ? 'bg-slate-900 text-white' : 'hover:bg-slate-100'}`}
+              className={`rounded px-3 py-1 text-sm ${tab === t ? 'bg-slate-900 text-white' : 'hover:bg-slate-100'}`}
             >
               {TAB_LABEL[t]}
             </button>

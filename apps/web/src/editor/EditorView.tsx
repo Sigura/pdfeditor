@@ -24,7 +24,7 @@ function Thumb({ pdf, index, no, rotate, revision, active, changes, onClick }: {
     };
   }, [pdf, index, revision]);
   return (
-    <button ref={ref} onClick={onClick} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
+    <button ref={ref} onClick={onClick} aria-current={active ? 'page' : undefined} className={`relative block w-full rounded p-1 ${active ? 'bg-sky-100 ring-2 ring-sky-500' : 'hover:bg-slate-200'}`}>
       {src ? (
         <img src={src} alt={`Page ${no}`} className="w-full bg-white shadow" style={rotate ? { transform: `rotate(${rotate}deg)${rotate % 180 ? ' scale(0.7)' : ''}` } : undefined} />
       ) : (
@@ -205,6 +205,42 @@ function PromptDialog() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** "Page n / N" in display order; type a number and press Enter to go there. */
+function PageJump() {
+  const st = useEditor();
+  const order = pageOrder(st.ops, st.pages);
+  const current = order.indexOf(st.pageIndex) + 1;
+  const [draft, setDraft] = useState<string | null>(null);
+  const go = () => {
+    const n = Number(draft);
+    if (Number.isInteger(n) && n >= 1 && n <= order.length) st.setPage(order[n - 1]!);
+    setDraft(null);
+  };
+  return (
+    <label className="ml-4 flex items-center gap-1 text-slate-600">
+      Page
+      <input
+        data-testid="page-jump"
+        aria-label="Go to page"
+        inputMode="numeric"
+        className="w-10 rounded border border-slate-300 px-1 py-0.5 text-center tabular-nums"
+        value={draft ?? String(current)}
+        onFocus={(e) => e.target.select()}
+        onChange={(e) => setDraft(e.target.value.replace(/\D/g, ''))}
+        onBlur={go}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          else if (e.key === 'Escape') {
+            setDraft(null);
+            requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
+          }
+        }}
+      />
+      <span className="tabular-nums" data-testid="page-count">/ {order.length}</span>
+    </label>
   );
 }
 
@@ -480,7 +516,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
       }}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-sm">
-        <button className="rounded bg-slate-900 px-3 py-1.5 text-white" onClick={() => inputRef.current?.click()} disabled={st.busy}>
+        <button className="rounded border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50 disabled:opacity-40" onClick={() => inputRef.current?.click()} disabled={st.busy}>
           Open PDF
         </button>
         <input
@@ -507,6 +543,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
                 Fit
               </button>
             </div>
+            <PageJump />
             <div className="ml-4 flex items-center gap-1" data-testid="tools">
               {(
                 [
@@ -547,7 +584,7 @@ export function EditorView({ onArrange }: { onArrange: (file: File) => void }) {
             <button className="rounded px-2 py-1 text-slate-600 hover:bg-slate-100" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
               ?
             </button>
-            <button data-testid="download" title="Download the edited PDF (Ctrl + S)" className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-60" disabled={downloading} onClick={() => void download(downloadBlob, true)}>
+            <button data-testid="download" title="Download the edited PDF (Ctrl + S)" className="rounded bg-sky-600 px-3 py-1.5 text-white hover:bg-sky-700 disabled:opacity-60" disabled={downloading} onClick={() => void download(downloadBlob, true)}>
               Download
             </button>
           </>

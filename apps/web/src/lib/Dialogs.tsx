@@ -75,7 +75,7 @@ export function Dialogs() {
           <button type="button" className="rounded px-3 py-1.5 hover:bg-slate-100" onClick={() => done(false)}>
             Cancel
           </button>
-          <button ref={okRef} type="submit" data-testid="dialog-ok" className="rounded bg-slate-900 px-3 py-1.5 text-white">
+          <button ref={okRef} type="submit" data-testid="dialog-ok" className="rounded bg-sky-600 px-3 py-1.5 text-white hover:bg-sky-700">
             {password ? 'Open' : ask.ok}
           </button>
         </div>

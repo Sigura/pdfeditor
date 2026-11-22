@@ -129,6 +129,8 @@ export type EditorState = {
   deskew: (ops: Extract<EditOperation, { type: 'deskewPage' }>[]) => Promise<void>;
   /** Undoes one op anywhere in the list (later ops that depend on it make the server reject the change). */
   removeOp: (index: number) => Promise<void>;
+  /** Undoes every op; one redo brings them all back. */
+  revertAll: () => Promise<void>;
   /** Moves the selected box by (dx, dy); consecutive nudges are sent as one moveElement. */
   nudgeBy: (dx: number, dy: number) => void;
   rendered: () => void;
@@ -329,6 +331,16 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ nudge: null });
     const ok = await send(get, () => get().redoStack.at(-1) ?? null, 'append');
     if (ok) set((s) => ({ redoStack: s.redoStack.slice(0, -1) }));
+  },
+  revertAll: async () => {
+    clearTimeout(nudgeTimer);
+    set({ nudge: null });
+    let undone: EditOperation[] = [];
+    const ok = await send(get, () => {
+      undone = get().ops;
+      return undone.length ? [] : null;
+    }, 'replace');
+    if (ok) set((s) => ({ redoStack: [...s.redoStack, undone] }));
   },
   removeOp: async (index) => {
     clearTimeout(nudgeTimer);

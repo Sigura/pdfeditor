@@ -17,7 +17,7 @@ async function textItems(bytes: Uint8Array) {
 
 async function open(page: Page, name: string) {
   await page.goto('/');
-  await page.getByRole('button', { name: 'edit', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
   await page.getByTestId('editor-input').setInputFiles(fixture(name));
   await expect(page.getByTestId('overlay')).toBeVisible();
 }
@@ -82,6 +82,7 @@ test('arrange pages of an edited PDF, then edit the result', async ({ page }) =>
   await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
   await expect(page.getByTestId('page-thumb')).toHaveCount(3);
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('download').click()]);
+  expect(download.suggestedFilename()).toBe('latin-standard14-edited-merged.pdf');
   const doc = await getDocument({ data: new Uint8Array(readFileSync((await download.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
   expect(doc.numPages).toBe(3);
   expect((await doc.getPage(1)).rotate).toBe(90);
@@ -173,6 +174,19 @@ test('edit text, nudge, restyle, undo one change and download', async ({ page })
   expect(after.x).toBeCloseTo(before.x + 3, 3);
   expect(after.y).toBeCloseTo(before.y - 10, 3);
   expect(edited.map((i) => i.str)).not.toContain('Edited title');
+
+  await page.getByTestId('revert-all').click();
+  await page.getByTestId('confirm-dialog').getByTestId('dialog-ok').click();
+  await expect(changes(page)).toHaveCount(0);
+  await page.keyboard.press('Control+Shift+z');
+  await expect(changes(page)).toHaveCount(1);
+  await expect(changes(page).first()).toContainText('Move');
+
+  await expect(page.getByTestId('page-count')).toHaveText('/ 2');
+  await page.getByTestId('page-jump').fill('2');
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('page-thumb').nth(1).locator('[aria-current="page"]')).toBeVisible();
+  await expect(page.getByTestId('page-jump')).toHaveValue('2');
 });
 
 test('table: Tab moves between cell editors, dragging a border resizes the column', async ({ page }) => {
