@@ -13,6 +13,7 @@ export const MergeSegmentsSchema = z
     z.union([
       z.object({ file: z.number().int().min(0), pages: z.string().max(1000).optional(), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).optional() }),
       z.object({ blank: z.literal(true) }),
+      z.object({ copy: z.number().int() }),
     ]),
   )
   .max(10_000);

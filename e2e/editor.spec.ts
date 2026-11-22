@@ -169,6 +169,10 @@ test('duplicate page: the copy is edited on its own in the editor; Merge repeats
   await expect(items).toHaveCount(3);
   const [merged] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /Merge & download/ }).click()]);
   expect(merged.suggestedFilename()).toBe('latin-standard14-merged.pdf');
+  // Sent as {copy}: the repeated page shares its content stream.
+  const { PDFDocument, PDFName } = createRequire(path.join(import.meta.dirname, '..', 'packages', 'pdf-core', 'package.json'))('pdf-lib') as typeof import('pdf-lib');
+  const contents = (await PDFDocument.load(readFileSync((await merged.path())!))).getPages().map((p) => String(p.node.get(PDFName.of('Contents'))));
+  expect(contents[2]).toBe(contents[1]);
   const out = await getDocument({ data: new Uint8Array(readFileSync((await merged.path())!)), isEvalSupported: false, standardFontDataUrl: fontsDir, verbosity: 0 }).promise;
   expect(out.numPages).toBe(3);
   const t = async (n: number) => (await (await out.getPage(n)).getTextContent()).items.map((i) => ('str' in i ? i.str : '')).join(' ');

@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 
 export type SourceFile = { id: string; name: string; bytes: Uint8Array; pageCount: number; password?: string };
-/** A page of a source file, or a blank page (`fileId` BLANK). `rotate`: degrees added to the page's rotation. */
-export type PageItem = { key: string; fileId: string; pageIndex: number; rotate: number };
+/**
+ * A page of a source file, or a blank page (`fileId` BLANK). `rotate`: degrees added to the page's rotation.
+ * `copyOf`: the key of the page it duplicates, so the server can share that page's content.
+ */
+export type PageItem = { key: string; fileId: string; pageIndex: number; rotate: number; copyOf?: string };
 export const BLANK = '';
 let blankId = 0;
 
@@ -61,7 +64,8 @@ export const useMergeStore = create<MergeState>((set) => ({
       const i = s.pages.findIndex((p) => p.key === key);
       if (i < 0) return s;
       const pages = s.pages.slice();
-      pages.splice(i + 1, 0, { ...pages[i]!, key: `${key}+${++blankId}` });
+      const src = pages[i]!;
+      pages.splice(i + 1, 0, { ...src, key: `${key}+${++blankId}`, copyOf: src.copyOf ?? key });
       return { pages };
     }),
   removeFile: (fileId) =>
@@ -75,9 +79,12 @@ export const useMergeStore = create<MergeState>((set) => ({
   setError: (error) => set({ error }),
 }));
 
-export type Segment = { file: number; pages: string; rotate?: number } | { blank: true };
+export type Segment = { file: number; pages: string; rotate?: number } | { blank: true } | { copy: number };
 
-/** Collapses the page order into per-file runs ("1-3") so the server copies each run in one go. */
+/**
+ * Collapses the page order into per-file runs ("1-3") so the server copies each run in one go. A duplicate
+ * whose source comes earlier with the same rotation becomes {copy: position}, sharing its content.
+ */
 export function toSegments(pages: PageItem[], fileOrder: string[]): Segment[] {
   const segments: Segment[] = [];
   let run: { fileId: string; start: number; end: number; rotate: number } | null = null;
@@ -87,7 +94,13 @@ export function toSegments(pages: PageItem[], fileOrder: string[]): Segment[] {
     segments.push({ file: fileOrder.indexOf(run.fileId), pages: run.start === run.end ? `${n(run.start)}` : `${n(run.start)}-${n(run.end)}`, ...(run.rotate && { rotate: run.rotate }) });
     run = null;
   };
-  for (const p of pages) {
+  for (const [i, p] of pages.entries()) {
+    const src = p.copyOf === undefined ? -1 : pages.findIndex((q) => q.key === p.copyOf);
+    if (src >= 0 && src < i && pages[src]!.rotate === p.rotate) {
+      flush();
+      segments.push({ copy: src });
+      continue;
+    }
     if (p.fileId === BLANK) {
       flush();
       segments.push({ blank: true });

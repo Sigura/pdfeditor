@@ -6,7 +6,7 @@
   - `files`: one or more PDFs, in order
   - `ranges` (optional): JSON array aligned with `files`, e.g. `["", "1-3"]`
   - `passwords` (optional): JSON array aligned with `files`
-  - `segments` (optional): JSON `[{"file":1,"pages":"2","rotate":90},{"blank":true},{"file":0}]` for any page order across files. `rotate` (0/90/180/270) is added to each page's rotation, and `{"blank":true}` inserts an empty page the size of the page shown before it. It overrides `ranges`.
+  - `segments` (optional): JSON `[{"file":1,"pages":"2","rotate":90},{"blank":true},{"file":0}]` for any page order across files. `rotate` (0/90/180/270) is added to each page's rotation, `{"blank":true}` inserts an empty page the size of the page shown before it, and `{"copy":n}` repeats output page n (0-based; negative counts back, -1 = the page before), sharing its content, fonts and images. It overrides `ranges`.
 
   Returns `application/pdf`. Errors are JSON `{ error: { code, message } }`. Codes: `INVALID_RANGE`, `INVALID_PDF`, `ENCRYPTED` (password needed), `BAD_PASSWORD`, `UNSUPPORTED_ENCRYPTION`, `NOT_PDF`, `TOO_LARGE`.
 
